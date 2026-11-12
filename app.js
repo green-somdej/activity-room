@@ -45,6 +45,11 @@
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
     plusCal: '<rect x="3" y="4.5" width="18" height="17" rx="3"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4M12 13v5M9.5 15.5h5"/>',
+    shield: '<path d="M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6z"/><path d="m9 12 2 2 4-4"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    trash: '<path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 13a1.5 1.5 0 0 0 1.5 1.4h7A1.5 1.5 0 0 0 17 20l1-13"/><path d="M9 7V4.5A1.5 1.5 0 0 1 10.5 3h3A1.5 1.5 0 0 1 15 4.5V7"/>',
+    file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
+    scan: '<path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><path d="M4 12h16"/>',
     star2: '<path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/>'
   };
   const ic = (name, cls) => `<svg class="ic ${cls || ''}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
@@ -137,7 +142,8 @@
     state.acts = null; state.history = null;
   }
   function clearSession() {
-    state.token = null; state.user = null; state.history = null; state.acts = null;
+    state.token = null; state.user = null; state.history = null; state.acts = null; state.adminActs = null;
+    adm.data = null; adm.reg = null;
     LS.del('gs_token'); LS.del('gs_user');
   }
 
@@ -167,7 +173,7 @@
   }
 
   /* ============================ ROUTER ============================ */
-  const AUTH_ROUTES = { history: 1, profile: 1 };
+  const AUTH_ROUTES = { history: 1, profile: 1, admin: 1 };
   const go = (path) => { location.hash = '#/' + path; };
 
   function route() {
@@ -188,7 +194,7 @@
   }
 
   /* ============================ CHROME ============================ */
-  const NAV = [
+  const NAV_BASE = [
     { id: 'home', label: 'หน้าแรก', icon: 'home' },
     { id: 'activities', label: 'กิจกรรม', icon: 'calendar' },
     { id: 'history', label: 'ประวัติของฉัน', short: 'ประวัติ', icon: 'history' },
@@ -197,6 +203,8 @@
 
   function renderChrome() {
     const active = state.route === 'act' ? 'activities' : state.route;
+    const NAV = state.user && state.user.isAdmin
+      ? NAV_BASE.slice(0, 3).concat([{ id: 'admin', label: 'ผู้ดูแล', icon: 'shield' }], NAV_BASE.slice(3)) : NAV_BASE;
     const links = NAV.map((n) => `<a href="#/${n.id}" class="${active === n.id ? 'active' : ''}">${ic(n.icon)}<span>${n.label}</span></a>`).join('');
     document.getElementById('topnav').innerHTML = links;
     document.getElementById('tabbar').innerHTML = NAV.map((n) =>
@@ -1033,6 +1041,408 @@
     </div>`;
   }
 
+  /* ============================= ADMIN ============================= */
+  const adm = { data: null, filter: 'upcoming', q: '', reg: null, regFilter: 'all', regSlot: 'all', regQ: '', ci: null };
+  const statHtml = (icon, cls, n, label) => `<div class="stat"><span class="si ${cls}">${ic(icon)}</span><div><b>${n}</b><span>${label}</span></div></div>`;
+
+  async function loadAdmin(force) {
+    if (adm.data && !force) return adm.data;
+    adm.data = await api('adminOverview');
+    state.adminActs = adm.data.activities;
+    return adm.data;
+  }
+  function putAdminAct(a) {
+    if (!state.adminActs) return;
+    const i = state.adminActs.findIndex((x) => x.id === a.id);
+    if (i >= 0) state.adminActs[i] = Object.assign({}, state.adminActs[i], a); else state.adminActs.unshift(a);
+  }
+
+  function adminDenied() {
+    view.innerHTML = emptyHtml('lock', 'สำหรับผู้ดูแลระบบเท่านั้น',
+      'บัญชีนี้ยังไม่มีสิทธิ์ผู้ดูแล — ให้เจ้าของระบบเพิ่มรหัสพนักงานของคุณที่เมนู<br><b>"8) จัดการผู้ดูแลระบบ"</b> ใน Google Sheet แล้วเข้าหน้านี้อีกครั้ง',
+      '<a class="btn btn-primary" href="#/home">กลับหน้าแรก</a>');
+  }
+
+  async function renderAdmin(arg) {
+    if (!state.user || !state.user.isAdmin) {
+      // อาจเพิ่งได้รับสิทธิ์ — ตรวจสอบกับเซิร์ฟเวอร์อีกครั้ง
+      view.innerHTML = '<div class="skeleton" style="height:140px"></div>';
+      const u = await api('me');
+      state.user = u; LS.set('gs_user', u); renderChrome();
+      if (!u.isAdmin) { adminDenied(); return; }
+    }
+    try {
+      const m = /^act\/(.+)$/.exec(arg || '');
+      if (m) await renderAdminAct(m[1]); else await renderAdminHome();
+    } catch (e) {
+      if (e.code === 'FORBIDDEN') { state.user.isAdmin = false; LS.set('gs_user', state.user); renderChrome(); adminDenied(); return; }
+      throw e;
+    }
+  }
+
+  const adminHeadHtml = () => `
+    <div class="section-head" style="align-items:center;flex-wrap:wrap">
+      <div><span class="pill pill-info">${ic('shield', 'ic-sm')} ผู้ดูแลระบบ</span>
+        <h1 class="page-title" style="margin-top:8px">จัดการกิจกรรม</h1>
+        <p class="page-sub">เพิ่ม/แก้ไขกิจกรรม ดูรายชื่อผู้ลงทะเบียน เช็คอินแทน และดาวน์โหลด QR / โปสเตอร์</p></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-ghost" data-action="admAdmins">${ic('shield')} ผู้ดูแลระบบ</button>
+        <button class="btn btn-primary" data-action="admNew">${ic('plus')} เพิ่มกิจกรรม</button>
+      </div>
+    </div>`;
+
+  async function renderAdminHome() {
+    view.innerHTML = `${adminHeadHtml()}<div class="stats" style="margin-top:12px">${Array.from({ length: 4 }).map(() => '<div class="skeleton" style="height:86px"></div>').join('')}</div>
+      <div class="skeleton" style="height:360px;margin-top:20px"></div>`;
+    const d = await loadAdmin(true);
+    if (state.route !== 'admin') return;
+    const st = d.stats; const by = Number(st.year) + 543;
+    view.innerHTML = `${adminHeadHtml()}
+      <div class="stats" style="margin-top:12px">
+        ${statHtml('calendar', 'si-green', st.activities, `กิจกรรมปี ${by}`)}
+        ${statHtml('users', 'si-blue', st.registrations, `ลงทะเบียนปี ${by}`)}
+        ${statHtml('check', 'si-amber', st.checkedIn, 'เช็คอินแล้ว')}
+        ${statHtml('award', 'si-violet', st.people, 'ผู้เข้าร่วม (คน)')}
+      </div>
+      <div class="adm-toolbar">
+        <div class="seg" id="adm-seg"></div>
+        <div class="input-wrap adm-search">
+          <input class="input" id="adm-search" placeholder="ค้นหาชื่อกิจกรรม / สถานที่" value="${esc(adm.q)}">
+          <span class="search-ic">${ic('search', 'ic-sm')}</span>
+        </div>
+      </div>
+      <div id="adm-list" class="adm-list"></div>`;
+    const draw = () => {
+      const acts = d.activities;
+      const counts = { upcoming: acts.filter((a) => !a.isPast).length, past: acts.filter((a) => a.isPast).length, all: acts.length };
+      document.getElementById('adm-seg').innerHTML = [['upcoming', 'กำลังจะมาถึง'], ['past', 'จัดไปแล้ว'], ['all', 'ทั้งหมด']]
+        .map(([k, l]) => `<button class="${adm.filter === k ? 'on' : ''}" data-action="admFilter" data-v="${k}">${l} <span class="muted">${counts[k]}</span></button>`).join('');
+      const q = adm.q.trim().toLowerCase();
+      let list = acts.filter((a) => (adm.filter === 'all' || (adm.filter === 'past') === !!a.isPast) &&
+        (!q || (a.name + ' ' + (a.location || '') + ' ' + (a.type || '')).toLowerCase().includes(q)));
+      if (adm.filter === 'upcoming') list = list.slice().reverse();
+      document.getElementById('adm-list').innerHTML = list.length ? list.map(admRowHtml).join('')
+        : emptyHtml('calendar', 'ไม่พบกิจกรรม', adm.filter === 'upcoming' ? 'ยังไม่มีกิจกรรมที่กำลังจะมาถึง' : 'ลองเปลี่ยนตัวกรองหรือคำค้นหา',
+          `<button class="btn btn-primary" data-action="admNew">${ic('plus')} เพิ่มกิจกรรม</button>`);
+    };
+    state.redrawAdmin = draw;
+    draw();
+    document.getElementById('adm-search').addEventListener('input', (e) => { adm.q = e.target.value; draw(); });
+  }
+
+  function admRowHtml(a) {
+    const t = typeInfo(a.type);
+    const d = parseD((a.slots[0] || {}).date || a.date);
+    const id = esc(a.id);
+    return `<div class="adm-act">
+      <div class="tl-date ${t.cls}"><b>${d ? d.getDate() : '-'}</b><span>${d ? MON[d.getMonth()] + ' ' + String(d.getFullYear() + 543).slice(2) : ''}</span></div>
+      <div class="adm-main" data-action="admOpen" data-id="${id}">
+        <h4>${esc(a.name)}</h4>
+        <div class="meta">${ic(t.icon, 'ic-sm')}<span>${esc(a.type || 'กิจกรรม')}</span> · ${ic('calendar', 'ic-sm')}<span>${dateRange(a)} · ${a.slots.length} รอบ</span></div>
+        <div class="adm-nums">
+          ${statusPill(a)}
+          <span>${ic('users', 'ic-sm')} ${seatsText(a)}</span>
+          ${a.requireCheckIn || a.checkedInCount ? `<span>${ic('check', 'ic-sm')} เช็คอิน ${a.checkedInCount || 0}/${a.registeredCount}</span>` : ''}
+        </div>
+      </div>
+      <div class="adm-actions">
+        <button class="btn btn-primary btn-sm" data-action="admOpen" data-id="${id}">${ic('users', 'ic-sm')} รายชื่อ</button>
+        <button class="btn btn-ghost btn-sm" data-action="admEdit" data-id="${id}">${ic('edit', 'ic-sm')} แก้ไข</button>
+        <button class="btn btn-ghost btn-sm" data-action="qr" data-id="${id}">${ic('qr', 'ic-sm')} QR</button>
+        <button class="btn btn-ghost btn-sm" data-action="poster" data-id="${id}">${ic('image', 'ic-sm')} โปสเตอร์</button>
+      </div>
+    </div>`;
+  }
+
+  /* ---------- รายชื่อผู้ลงทะเบียน ---------- */
+  async function renderAdminAct(id) {
+    view.innerHTML = '<div class="skeleton" style="height:160px"></div><div class="skeleton" style="height:380px;margin-top:20px"></div>';
+    const r = await api('adminRegistrants', { activityId: id });
+    if (state.route !== 'admin') return;
+    if (!adm.reg || adm.reg.activity.id !== id) { adm.regFilter = 'all'; adm.regSlot = 'all'; adm.regQ = ''; }
+    adm.reg = r;
+    putAdminAct(r.activity);
+    drawAdminAct();
+  }
+
+  function slotShort(a, slotId, fallback) {
+    const s = slotOf(a, slotId);
+    return s ? `${fmtDShort(s.date)} · ${timeLabel(s)}` : (fallback || '-');
+  }
+
+  function drawAdminAct() {
+    const a = adm.reg.activity; const list = adm.reg.registrants;
+    const t = typeInfo(a.type);
+    const inN = list.filter((x) => x.checkedIn).length;
+    const pct = list.length ? Math.round((inN / list.length) * 100) : 0;
+    const id = esc(a.id);
+    view.innerHTML = `
+      <a class="back" href="#/admin">${ic('chevL', 'ic-sm')} จัดการกิจกรรม</a>
+      <section class="detail-hero ${t.cls}" style="padding-bottom:22px">
+        ${ic(t.icon, 'cover-ic')}
+        <div class="chips"><span class="pill pill-glass">${ic(t.icon, 'ic-sm')} ${esc(a.type || 'กิจกรรม')}</span>${statusPill(a, true)}</div>
+        <h1>${esc(a.name)}</h1>
+        <div class="chips" style="gap:16px">
+          <span class="meta" style="color:#fff">${ic('calendar', 'ic-sm')} ${dateRange(a)} · ${a.slots.length} รอบ</span>
+          ${a.location ? `<span class="meta" style="color:#fff">${ic('pin', 'ic-sm')} ${esc(a.location)}</span>` : ''}
+        </div>
+        <div class="adm-hero-actions">
+          <button class="btn btn-white btn-sm" data-action="admEdit" data-id="${id}">${ic('edit', 'ic-sm')} แก้ไขกิจกรรม</button>
+          <button class="btn btn-glass btn-sm" data-action="admCiQr" data-id="${id}">${ic('scan', 'ic-sm')} QR เช็คอินหน้างาน</button>
+          <button class="btn btn-glass btn-sm" data-action="qr" data-id="${id}">${ic('qr', 'ic-sm')} QR ลงทะเบียน</button>
+          <button class="btn btn-glass btn-sm" data-action="poster" data-id="${id}">${ic('image', 'ic-sm')} โปสเตอร์</button>
+          <a class="btn btn-glass btn-sm" href="#/act/${encodeURIComponent(a.id)}">${ic('eye', 'ic-sm')} มุมมองพนักงาน</a>
+        </div>
+      </section>
+      <div class="stats" style="margin-top:18px">
+        ${statHtml('users', 'si-blue', list.length, 'ลงทะเบียน')}
+        ${statHtml('check', 'si-green', inN, 'เช็คอินแล้ว')}
+        ${statHtml('clock', 'si-amber', list.length - inN, 'ยังไม่เช็คอิน')}
+        ${statHtml('award', 'si-violet', pct + '%', 'อัตราการเข้าร่วม')}
+      </div>
+      ${a.slots.length > 1 ? `<div class="adm-slots">${a.slots.map((s) => {
+        const n = list.filter((x) => x.slotId === s.id).length;
+        return `<div class="adm-slot"><b>${fmtDShort(s.date)}</b><span>${timeLabel(s)}</span><small>${n}${s.cap ? '/' + s.cap : ''} คน</small>
+          ${s.cap ? `<span class="bar"><i style="width:${Math.min(100, Math.round(n / s.cap * 100))}%"></i></span>` : ''}</div>`;
+      }).join('')}</div>` : ''}
+      <section class="card card-pad" style="margin-top:20px">
+        <div class="section-head" style="align-items:center;flex-wrap:wrap;margin-bottom:6px">
+          <div><h2 class="card-title" style="margin:0">${ic('users')} รายชื่อผู้ลงทะเบียน</h2></div>
+          <button class="btn btn-ghost btn-sm" data-action="admCsv" ${list.length ? '' : 'disabled'}>${ic('file', 'ic-sm')} ดาวน์โหลด Excel (CSV)</button>
+        </div>
+        <div class="adm-toolbar" style="margin:10px 0 14px">
+          <div class="seg" id="reg-seg"></div>
+          ${a.slots.length > 1 ? `<select class="input adm-select" id="reg-slot"><option value="all">ทุกรอบ</option>${a.slots.map((s) =>
+            `<option value="${esc(s.id)}" ${adm.regSlot === s.id ? 'selected' : ''}>${esc(fmtDShort(s.date) + ' ' + timeLabel(s))}</option>`).join('')}</select>` : ''}
+          <div class="input-wrap adm-search">
+            <input class="input" id="reg-search" placeholder="ค้นหาชื่อ / รหัส / หน่วยงาน" value="${esc(adm.regQ)}">
+            <span class="search-ic">${ic('search', 'ic-sm')}</span>
+          </div>
+        </div>
+        <div id="reg-list" class="reg-list"></div>
+      </section>`;
+    drawRegList();
+    document.getElementById('reg-search').addEventListener('input', (e) => { adm.regQ = e.target.value; drawRegList(); });
+    const sel = document.getElementById('reg-slot');
+    if (sel) sel.addEventListener('change', (e) => { adm.regSlot = e.target.value; drawRegList(); });
+  }
+
+  function filteredRegs() {
+    const q = adm.regQ.trim().toLowerCase();
+    return adm.reg.registrants.filter((x) =>
+      (adm.regFilter === 'all' || (adm.regFilter === 'in') === x.checkedIn) &&
+      (adm.regSlot === 'all' || x.slotId === adm.regSlot) &&
+      (!q || (x.name + ' ' + x.employeeId + ' ' + x.deptName).toLowerCase().includes(q)));
+  }
+
+  function drawRegList() {
+    const all = adm.reg.registrants; const a = adm.reg.activity;
+    const c = { all: all.length, in: all.filter((x) => x.checkedIn).length };
+    c.out = c.all - c.in;
+    document.getElementById('reg-seg').innerHTML = [['all', 'ทั้งหมด'], ['in', 'เช็คอินแล้ว'], ['out', 'ยังไม่เช็คอิน']]
+      .map(([k, l]) => `<button class="${adm.regFilter === k ? 'on' : ''}" data-action="regFilter" data-v="${k}">${l} <span class="muted">${c[k]}</span></button>`).join('');
+    const list = filteredRegs();
+    document.getElementById('reg-list').innerHTML = list.length ? list.map((x, i) => `
+      <div class="reg-row ${x.checkedIn ? 'is-in' : ''}">
+        <span class="reg-no">${i + 1}</span>
+        <span class="avatar">${esc(initials(x.name))}</span>
+        <div class="reg-main">
+          <b>${esc(x.name)}</b>
+          <small>${esc(x.employeeId)} · ${esc(x.deptName || '-')}</small>
+          <small class="muted">${ic('clock', 'ic-sm')} ${esc(slotShort(a, x.slotId, x.slotLabel))}${/walk-in|หน้างาน/i.test(x.source) ? ' · <b>หน้างาน</b>' : ''}</small>
+        </div>
+        <div class="reg-side">
+          <button class="chk ${x.checkedIn ? 'on' : ''}" data-action="admCheck" data-reg="${esc(x.regId)}" data-v="${x.checkedIn ? 0 : 1}"
+            title="${x.checkedIn ? 'แตะเพื่อยกเลิกเช็คอิน' : 'เช็คอินแทนผู้เข้าร่วม'}">
+            <span class="chk-l">${ic('check', 'ic-sm')} ${x.checkedIn ? 'เช็คอินแล้ว' : 'เช็คอิน'}</span>${x.checkedIn ? `<small>${esc(x.checkedInAt)}</small>` : ''}</button>
+          <button class="icon-btn sm" data-action="admRemove" data-reg="${esc(x.regId)}" title="ลบการลงทะเบียน" aria-label="ลบการลงทะเบียน">${ic('trash', 'ic-sm')}</button>
+        </div>
+      </div>`).join('')
+      : emptyHtml('users', all.length ? 'ไม่พบรายชื่อที่ตรงกับตัวกรอง' : 'ยังไม่มีผู้ลงทะเบียน', all.length ? '' : 'แชร์ QR ลงทะเบียนหรือโปสเตอร์เพื่อประชาสัมพันธ์กิจกรรม');
+  }
+
+  async function admToggleCheck(el) {
+    const a = adm.reg.activity;
+    const checked = el.dataset.v === '1';
+    const x = adm.reg.registrants.find((r) => r.regId === el.dataset.reg);
+    if (!checked) {
+      const ok = await confirmModal('ยกเลิกเช็คอิน?', `${esc(x ? x.name : '')}<br><span class="muted">เวลาเช็คอินเดิมจะถูกลบ</span>`, 'ยกเลิกเช็คอิน', true);
+      if (!ok) return;
+    }
+    el.disabled = true; el.innerHTML = '<span class="spinner" style="width:16px;height:16px"></span>';
+    try {
+      adm.reg = await api('adminCheckIn', { activityId: a.id, regId: el.dataset.reg, checked });
+      adm.data = null;
+      drawAdminAct();
+      toast(checked ? `เช็คอินให้ ${x ? x.name : ''} แล้ว` : 'ยกเลิกเช็คอินแล้ว', 'ok');
+    } catch (e) { toast(e.message, 'err'); drawRegList(); }
+  }
+
+  async function admRemoveReg(el) {
+    const a = adm.reg.activity;
+    const x = adm.reg.registrants.find((r) => r.regId === el.dataset.reg);
+    if (!x) return;
+    const ok = await confirmModal('ลบการลงทะเบียน?', `<b>${esc(x.name)}</b> (${esc(x.employeeId)})<br>${esc(slotShort(a, x.slotId, x.slotLabel))}<br><span class="muted">ลบแล้วกู้คืนไม่ได้ ผู้ใช้ลงทะเบียนใหม่เองได้</span>`, 'ลบรายการนี้', true);
+    if (!ok) return;
+    try {
+      adm.reg = await api('adminRemoveReg', { activityId: a.id, regId: x.regId });
+      adm.data = null; state.acts = null;
+      drawAdminAct(); toast('ลบการลงทะเบียนแล้ว', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  function admCsv() {
+    const a = adm.reg.activity;
+    const cell = (v) => {
+      let s = String(v == null ? '' : v);
+      if (/^[=+\-@]/.test(s)) s = "'" + s; // กันสูตร Excel
+      return '"' + s.replace(/"/g, '""') + '"';
+    };
+    const head = ['ลำดับ', 'รหัสพนักงาน', 'ชื่อ-นามสกุล', 'หน่วยงาน', 'อีเมล', 'รอบ', 'ลงทะเบียนเมื่อ', 'ช่องทาง', 'เช็คอิน', 'เวลาเช็คอิน'];
+    const rows = filteredRegs().map((x, i) => [i + 1, null, x.name, x.deptName, x.email, slotShort(a, x.slotId, x.slotLabel),
+      x.registeredAt, x.source, x.checkedIn ? 'เช็คอินแล้ว' : 'ยังไม่เช็คอิน', x.checkedInAt]
+      .map((v, j) => (j === 1 ? `="${x.employeeId}"` : cell(v))).join(','));
+    const csv = '﻿' + [head.map(cell).join(',')].concat(rows).join('\r\n');
+    saveBlob(new Blob([csv], { type: 'text/csv;charset=utf-8' }), `รายชื่อ_${safeFile(a.name)}.csv`);
+    toast('ดาวน์โหลดรายชื่อแล้ว (เปิดด้วย Excel ได้)', 'ok');
+  }
+
+  /* ---------- ฟอร์มเพิ่ม/แก้ไขกิจกรรม ---------- */
+  async function openActForm(id) {
+    let a = null;
+    if (id) a = (state.adminActs || []).find((x) => x.id === id) || (adm.reg && adm.reg.activity.id === id ? adm.reg.activity : null);
+    const types = (adm.data && adm.data.types) || ['อบรม', 'กิจกรรมรณรงค์', 'กิจกรรมสิ่งแวดล้อม', 'ประชุม/สัมมนา', 'อื่นๆ'];
+    const v = a || { name: '', type: types[0], location: '', description: '', activityDate: '', regStart: '', regEnd: '', requireCheckIn: true, slotsText: '' };
+    openModal(`
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+        <div><h3>${a ? 'แก้ไขกิจกรรม' : 'เพิ่มกิจกรรมใหม่'}</h3><p class="muted" style="margin:2px 0 0;font-size:13.5px">${a ? esc(a.name) : 'กรอกข้อมูลแล้วกดบันทึก — พนักงานจะเห็นในแอปทันที'}</p></div>
+        <button class="icon-btn" data-action="closeModal" aria-label="ปิด">${ic('x')}</button>
+      </div>
+      <form id="act-form" style="margin-top:16px" novalidate>
+        <div class="form-error" id="act-err"></div>
+        <div class="field"><label>ชื่อกิจกรรม *</label><input class="input" name="name" value="${esc(v.name)}" maxlength="150" required></div>
+        <div class="row2">
+          <div class="field"><label>ประเภท</label><select class="input" name="type">${types.map((t) => `<option ${t === v.type ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>
+          <div class="field"><label>สถานที่</label><input class="input" name="location" value="${esc(v.location)}" placeholder="เช่น ห้องประชุมใหญ่ อาคาร 1"></div>
+        </div>
+        <div class="field"><label>รายละเอียด</label><textarea class="input" name="description" rows="2">${esc(v.description)}</textarea></div>
+        <div class="field">
+          <label>รอบวันที่ / เวลา</label>
+          <div class="slot-builder">
+            <input class="input" type="date" id="sb-date">
+            <input class="input" type="time" id="sb-start" value="09:00">
+            <input class="input" type="time" id="sb-end" value="12:00">
+            <input class="input" type="number" id="sb-cap" min="0" placeholder="รับ (คน)">
+            <button type="button" class="btn btn-ghost" data-action="sbAdd">${ic('plus', 'ic-sm')} เพิ่มรอบ</button>
+          </div>
+          <textarea class="input mono" name="slotsText" rows="4" placeholder="2026-11-20 09:00-12:00 30&#10;2026-11-20 13:00-16:00&#10;2026-11-21">${esc(v.slotsText)}</textarea>
+          <span class="hint">บรรทัดละ 1 รอบ: <code>ปปปป-ดด-วว ชช:นน-ชช:นน จำนวนที่รับ</code> · ไม่ใส่จำนวน = ไม่จำกัด · ไม่ใส่เวลา = ทั้งวัน</span>
+        </div>
+        <div class="row3">
+          <div class="field"><label>วันที่จัด <small class="muted">(ถ้าไม่ใส่รอบ)</small></label><input class="input" type="date" name="activityDate" value="${esc(v.activityDate || '')}"></div>
+          <div class="field"><label>เปิดรับลงทะเบียน</label><input class="input" type="date" name="regStart" value="${esc(v.regStart || '')}"></div>
+          <div class="field"><label>ปิดรับลงทะเบียน</label><input class="input" type="date" name="regEnd" value="${esc(v.regEnd || '')}"></div>
+        </div>
+        <label class="check-line"><input type="checkbox" name="requireCheckIn" ${v.requireCheckIn ? 'checked' : ''}> ต้องเช็คอินหน้างานด้วย QR (นับว่าเข้าร่วมเมื่อเช็คอินแล้ว)</label>
+        <div class="modal-actions"><button type="button" class="btn btn-ghost" data-action="closeModal">ยกเลิก</button>
+          <button class="btn btn-primary">${ic('check')} ${a ? 'บันทึกการแก้ไข' : 'เพิ่มกิจกรรม'}</button></div>
+      </form>`, 'wide');
+    bindForm('act-form', 'act-err', async (f) => {
+      const payload = {
+        id: a ? a.id : '', name: f.name.value.trim(), type: f.type.value, location: f.location.value.trim(),
+        description: f.description.value.trim(), slotsText: f.slotsText.value.trim(), activityDate: f.activityDate.value,
+        regStart: f.regStart.value, regEnd: f.regEnd.value, requireCheckIn: f.requireCheckIn.checked
+      };
+      if (!payload.name) throw new Error('กรุณาระบุชื่อกิจกรรม');
+      if (!payload.slotsText && !payload.activityDate) throw new Error('กรุณาเพิ่มรอบวันที่/เวลา หรือระบุวันที่จัดอย่างน้อย 1 อย่าง');
+      const saved = await api('adminSaveActivity', { activity: payload });
+      closeModal();
+      toast(a ? 'บันทึกการแก้ไขแล้ว' : 'เพิ่มกิจกรรมแล้ว', 'ok');
+      state.acts = null; adm.data = null;
+      if (a && adm.reg && adm.reg.activity.id === a.id && /^#\/admin\/act\//.test(location.hash)) renderAdminAct(a.id);
+      else if (!a) go('admin/act/' + encodeURIComponent(saved.id));
+      else route();
+    });
+  }
+
+  function slotBuilderAdd() {
+    const d = document.getElementById('sb-date').value;
+    const s = document.getElementById('sb-start').value;
+    const e = document.getElementById('sb-end').value;
+    const cap = document.getElementById('sb-cap').value;
+    if (!d) { toast('เลือกวันที่ของรอบก่อน', 'err'); return; }
+    if (s && e && s >= e) { toast('เวลาเริ่มต้องน้อยกว่าเวลาสิ้นสุด', 'err'); return; }
+    const line = d + (s && e ? ` ${s}-${e}` : '') + (Number(cap) > 0 ? ` ${Number(cap)}` : '');
+    const ta = document.querySelector('#act-form [name="slotsText"]');
+    ta.value = (ta.value.trim() ? ta.value.trim() + '\n' : '') + line;
+  }
+
+  /* ---------- QR เช็คอินหน้างาน ---------- */
+  async function openCheckinQr(a) {
+    openModal(`<div style="text-align:center;padding:30px 0"><span class="spinner" style="color:var(--brand-500)"></span><p class="muted">กำลังสร้าง QR เช็คอิน...</p></div>`);
+    let r;
+    try { r = await api('adminCheckinQr', { activityId: a.id }); } catch (e) { closeModal(); toast(e.message, 'err'); return; }
+    adm.ci = { url: r.checkinUrl, name: a.name };
+    openModal(`
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+        <div><h3>QR เช็คอินหน้างาน</h3><p class="muted" style="margin:2px 0 0;font-size:14px">${esc(a.name)}</p></div>
+        <button class="icon-btn" data-action="closeModal" aria-label="ปิด">${ic('x')}</button>
+      </div>
+      <div class="tip warn">${ic('info')}<div>ใช้ติดที่จุดลงทะเบียน <b>ในวันจัดกิจกรรม</b> ผู้เข้าร่วมสแกนแล้วกรอกรหัสพนักงานเพื่อเช็คอิน (คนละตัวกับ QR ลงทะเบียน)</div></div>
+      <div class="qr-frame"><canvas id="ci-canvas" width="600" height="600"></canvas></div>
+      <div class="qr-url" style="text-align:center">${esc(r.checkinUrl)}</div>
+      <div class="qr-actions">
+        <button class="btn btn-primary full" data-action="admCiDownload">${ic('download')} ดาวน์โหลด QR เช็คอิน (PNG)</button>
+        <button class="btn btn-ghost" data-action="admCiCopy">${ic('copy')} คัดลอกลิงก์</button>
+        <a class="btn btn-ghost" href="${esc(r.checkinUrl)}" target="_blank" rel="noopener" data-stop="1">${ic('eye')} เปิดหน้าเช็คอิน</a>
+      </div>`);
+    drawQRInto(document.getElementById('ci-canvas'), r.checkinUrl);
+  }
+
+  /* ---------- จัดการผู้ดูแลระบบ ---------- */
+  async function openAdminsModal(list) {
+    if (!list) {
+      openModal(`<div style="text-align:center;padding:30px 0"><span class="spinner" style="color:var(--brand-500)"></span></div>`);
+      try { list = await api('adminAdmins'); } catch (e) { closeModal(); toast(e.message, 'err'); return; }
+    }
+    openModal(`
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+        <div><h3>ผู้ดูแลระบบ</h3><p class="muted" style="margin:2px 0 0;font-size:13.5px">ผู้ที่อยู่ในรายชื่อนี้จะเห็นเมนู "ผู้ดูแล" หลังเข้าสู่ระบบ</p></div>
+        <button class="icon-btn" data-action="closeModal" aria-label="ปิด">${ic('x')}</button>
+      </div>
+      <div class="admin-list">${list.map((x) => `
+        <div class="admin-item">
+          <span class="avatar">${esc(initials(x.name || '?'))}</span>
+          <div style="flex:1;min-width:0"><b>${esc(x.name || 'ไม่พบชื่อ')}</b>${x.isMe ? ' <span class="pill pill-ok">คุณ</span>' : ''}
+            <small class="muted" style="display:block">${esc(x.employeeId)}${x.deptName ? ' · ' + esc(x.deptName) : ''}${x.hasAccount ? '' : ' · <span style="color:var(--warn-fg)">ยังไม่ได้สร้างบัญชีในแอป</span>'}</small></div>
+          ${x.isMe ? '' : `<button class="btn btn-ghost btn-sm" data-action="admRevoke" data-emp="${esc(x.employeeId)}">ถอนสิทธิ์</button>`}
+        </div>`).join('')}</div>
+      <form id="adm-add" class="admin-add" novalidate>
+        <div class="form-error" id="adm-add-err"></div>
+        <label for="adm-add-id" style="font-size:13.5px;font-weight:600">เพิ่มผู้ดูแล (รหัสพนักงาน 7 หลัก)</label>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <input class="input" id="adm-add-id" name="emp" inputmode="numeric" maxlength="7" placeholder="0000000" style="flex:1">
+          <button class="btn btn-primary">${ic('plus', 'ic-sm')} เพิ่ม</button>
+        </div>
+        <span class="hint" style="font-size:12.5px;color:var(--muted)">ผู้ดูแลเข้าสู่ระบบด้วยรหัสพนักงานและรหัสผ่านของตนเอง (ถ้ายังไม่มีบัญชี ให้ "ใช้งานครั้งแรก" ก่อน)</span>
+      </form>`);
+    const inp = document.getElementById('adm-add-id');
+    inp.addEventListener('input', () => { inp.value = inp.value.replace(/\D/g, '').slice(0, 7); });
+    bindForm('adm-add', 'adm-add-err', async (f) => {
+      if (!/^\d{7}$/.test(f.emp.value)) throw new Error('กรุณากรอกรหัสพนักงานให้ครบ 7 หลัก');
+      const r = await api('adminSetAdmin', { employeeId: f.emp.value, isAdmin: true });
+      toast('เพิ่มผู้ดูแลแล้ว', 'ok'); openAdminsModal(r);
+    });
+  }
+
+  async function admRevoke(el) {
+    const emp = el.dataset.emp;
+    const ok = await confirmModal('ถอนสิทธิ์ผู้ดูแล?', `รหัสพนักงาน <b>${esc(emp)}</b> จะใช้งานได้แบบพนักงานทั่วไป`, 'ถอนสิทธิ์', true);
+    if (!ok) { openAdminsModal(); return; }
+    try { const r = await api('adminSetAdmin', { employeeId: emp, isAdmin: false }); toast('ถอนสิทธิ์แล้ว', 'ok'); openAdminsModal(r); }
+    catch (e) { toast(e.message, 'err'); }
+  }
+
   /* ============================ PROFILE ============================ */
   async function renderProfile() {
     const u = state.user;
@@ -1045,6 +1455,7 @@
             <h1 style="font-size:24px">${esc(u.name)}</h1>
             <p class="muted" style="margin:2px 0 8px">${esc(u.deptName || '')}</p>
             <span class="pill pill-soft">รหัสพนักงาน ${esc(u.employeeId)}</span>
+            ${u.isAdmin ? `<a class="pill pill-info" href="#/admin">${ic('shield', 'ic-sm')} ผู้ดูแลระบบ · ไปหน้าจัดการ</a>` : ''}
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn btn-ghost" data-action="editProfile">${ic('edit')} แก้ไขข้อมูล</button>
@@ -1170,6 +1581,7 @@
             <div class="field"><label>รหัสผ่าน</label>${pwInput('password', 'current-password')}</div>
             <button class="btn btn-primary btn-lg btn-block" style="margin-top:6px">${ic('user')} เข้าสู่ระบบ</button>
             <p class="muted" style="font-size:13px;text-align:center;margin-top:14px">ลืมรหัสผ่าน? ติดต่อผู้ดูแลระบบเพื่อรีเซ็ต แล้วเลือก "ใช้งานครั้งแรก"</p>
+            <div class="tip" style="margin-top:10px">${ic('shield')}<div><b>ผู้ดูแลระบบ</b> เข้าสู่ระบบที่นี่ด้วยรหัสพนักงานของตนเอง แล้วจะเห็นเมนู <b>ผู้ดูแล</b> สำหรับจัดการกิจกรรม</div></div>
           </form>` : `
           <form id="signup-form" novalidate>
             <div class="form-error" id="auth-err"></div>
@@ -1256,6 +1668,7 @@
   function afterLogin(r, isNew) {
     setSession(r.token, r.user);
     toast(isNew ? `ยินดีต้อนรับ คุณ${firstName(r.user.name)} — สร้างบัญชีเรียบร้อย` : `ยินดีต้อนรับกลับ คุณ${firstName(r.user.name)}`, 'ok');
+    if (r.user.isAdmin) setTimeout(() => toast('บัญชีนี้มีสิทธิ์ผู้ดูแลระบบ — ดูเมนู "ผู้ดูแล"'), 600);
     const back = state.returnTo && !/login/.test(state.returnTo) ? state.returnTo : '#/home';
     state.returnTo = null;
     location.hash = back;
@@ -1340,8 +1753,32 @@
   }
 
   /* ============================ ACTIONS ============================ */
-  const findAct = (id) => (state.current && state.current.id === id ? state.current : (state.acts || []).find((a) => a.id === id));
+  const findAct = (id) => (state.current && state.current.id === id ? state.current
+    : (state.acts || []).find((a) => a.id === id) || (state.adminActs || []).find((a) => a.id === id)
+      || (adm.reg && adm.reg.activity.id === id ? adm.reg.activity : null));
   const ACTIONS = {
+    admNew: () => openActForm(''),
+    admEdit: (el) => openActForm(el.dataset.id),
+    admOpen: (el) => go('admin/act/' + encodeURIComponent(el.dataset.id)),
+    admFilter: (el) => { adm.filter = el.dataset.v; if (state.redrawAdmin) state.redrawAdmin(); },
+    regFilter: (el) => { adm.regFilter = el.dataset.v; drawRegList(); },
+    admCheck: (el) => admToggleCheck(el),
+    admRemove: (el) => admRemoveReg(el),
+    admCsv: () => admCsv(),
+    sbAdd: () => slotBuilderAdd(),
+    admCiQr: (el) => { const a = findAct(el.dataset.id); if (a) openCheckinQr(a); },
+    admCiDownload: async () => {
+      if (!adm.ci) return;
+      await logoReady;
+      saveBlob(await canvasToBlob(renderQR(document.createElement('canvas'), adm.ci.url, 1600)), `QR_เช็คอิน_${safeFile(adm.ci.name)}.png`);
+      toast('ดาวน์โหลด QR เช็คอินแล้ว', 'ok');
+    },
+    admCiCopy: async () => {
+      if (!adm.ci) return;
+      try { await navigator.clipboard.writeText(adm.ci.url); toast('คัดลอกลิงก์แล้ว', 'ok'); } catch (e) { window.prompt('คัดลอกลิงก์นี้', adm.ci.url); }
+    },
+    admAdmins: () => openAdminsModal(),
+    admRevoke: (el) => admRevoke(el),
     open: (el) => go('act/' + encodeURIComponent(el.dataset.id)),
     qr: (el) => { const a = findAct(el.dataset.id); if (a) openQrModal(a); },
     slot: (el) => onSlot(el),
@@ -1420,13 +1857,13 @@
   });
 
   /* ============================= BOOT ============================= */
-  const ROUTES = { home: renderHome, activities: renderActivities, act: renderDetail, history: renderHistory, profile: renderProfile, login: renderLogin };
+  const ROUTES = { home: renderHome, activities: renderActivities, act: renderDetail, history: renderHistory, profile: renderProfile, login: renderLogin, admin: renderAdmin };
 
   applyTheme();
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => renderChrome());
 
   if (DEMO) {
-    document.getElementById('demo-bar').innerHTML = `<div class="demo-bar">โหมดสาธิต — ข้อมูลตัวอย่างเก็บในเบราว์เซอร์นี้เท่านั้น · ลองรหัส <b>1234567</b> ที่ "ใช้งานครั้งแรก" เพื่อดูการเติมชื่ออัตโนมัติ</div>`;
+    document.getElementById('demo-bar').innerHTML = `<div class="demo-bar">โหมดสาธิต — ข้อมูลตัวอย่างเก็บในเบราว์เซอร์นี้เท่านั้น · ลองรหัส <b>1234567</b> ที่ "ใช้งานครั้งแรก" เพื่อดูการเติมชื่ออัตโนมัติ · ผู้ดูแลทดลอง: <b>9999999</b> / <b>admin1234</b></div>`;
   }
 
   // ลิงก์จาก QR: ?act=ID → เปิดหน้ากิจกรรมนั้น

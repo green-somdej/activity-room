@@ -52,14 +52,68 @@
     return { depts, acts, regs, users: [] };
   }
 
+  // บัญชีผู้ดูแลสำหรับทดลองในโหมดสาธิตเท่านั้น
+  const DEMO_ADMIN = { employeeId: '9999999', password: 'admin1234', name: 'ผู้ดูแลระบบ ทดลอง', deptId: 'D007', deptName: 'งานบริหารทั่วไป', email: '' };
+
+  function upgrade(db) {
+    if (!db.admins) db.admins = [DEMO_ADMIN.employeeId];
+    if (!db.users.find(u => u.employeeId === DEMO_ADMIN.employeeId)) db.users.push(Object.assign({}, DEMO_ADMIN));
+    db.regs.forEach((r, i) => { if (!r.regId) r.regId = 'R' + String(100000 + i); });
+    return db;
+  }
+
   function load() {
-    try { const v = JSON.parse(localStorage.getItem(KEY)); if (v && v.acts) return v; } catch (e) { /* ignore */ }
-    const db = seed(); save(db); return db;
+    try { const v = JSON.parse(localStorage.getItem(KEY)); if (v && v.acts) return upgrade(v); } catch (e) { /* ignore */ }
+    const db = upgrade(seed()); save(db); return db;
   }
   function save(db) { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { /* ignore */ } }
 
   const fail = (message, code) => { const e = new Error(message); e.code = code || 'ERROR'; throw e; };
-  const pub = (u) => ({ employeeId: u.employeeId, name: u.name, deptId: u.deptId, deptName: u.deptName, email: u.email || '' });
+  let curDb = null; // ให้ pub() รู้รายชื่อผู้ดูแล
+  const pub = (u) => ({ employeeId: u.employeeId, name: u.name, deptId: u.deptId, deptName: u.deptName, email: u.email || '',
+    isAdmin: !!(curDb && curDb.admins.includes(u.employeeId)) });
+  const needAdmin = (db, token) => {
+    const u = need(db, token);
+    if (!db.admins.includes(u.employeeId)) fail('บัญชีนี้ไม่มีสิทธิ์ผู้ดูแลระบบ', 'FORBIDDEN');
+    return u;
+  };
+  function parseSlots(text) {
+    const re = /^(\d{4}-\d{2}-\d{2})(?:\s+(\d{1,2})[:.](\d{2})\s*-\s*(\d{1,2})[:.](\d{2}))?(?:\s+(\d+))?\s*$/;
+    const seen = {};
+    return String(text || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean).map((line, i) => {
+      const m = line.match(re);
+      if (!m) fail(`รูปแบบรอบเวลาบรรทัดที่ ${i + 1} ไม่ถูกต้อง: "${line}" (ตัวอย่าง: 2026-11-20 09:00-12:00 30)`);
+      const start = m[2] ? m[2].padStart(2, '0') + ':' + m[3] : '';
+      const end = m[4] ? m[4].padStart(2, '0') + ':' + m[5] : '';
+      if (start && end && start >= end) fail(`เวลาเริ่มต้องน้อยกว่าเวลาสิ้นสุด (บรรทัดที่ ${i + 1})`);
+      const s = mkSlot(m[1], start, end, m[6] ? Number(m[6]) : 0);
+      if (seen[s.id]) fail(`รอบเวลาซ้ำกัน (บรรทัดที่ ${i + 1})`);
+      seen[s.id] = 1;
+      return s;
+    }).sort((a, b) => (a.date + a.start < b.date + b.start ? -1 : 1));
+  }
+  const slotsText = (slots) => slots.map(s => s.date + (s.start ? ` ${s.start}-${s.end}` : '') + (s.cap ? ` ${s.cap}` : '')).join('\n');
+  function adminAct(db, a) {
+    const b = build(db, a, '');
+    const regs = db.regs.filter(r => r.activityId === a.id);
+    return Object.assign(b, { checkedInCount: regs.filter(r => r.checkedInAt).length, slotsText: a.slotsRaw === false ? '' : slotsText(a.slots),
+      activityDate: a.activityDate || b.date, hasCheckinQr: !!a.checkinToken });
+  }
+  function registrants(db, id) {
+    const a = db.acts.find(x => x.id === id) || fail('ไม่พบกิจกรรมนี้ในระบบ', 'NOT_FOUND');
+    const list = db.regs.filter(r => r.activityId === id).map(r => ({
+      regId: r.regId, employeeId: r.employeeId, name: r.name, deptName: r.deptName, email: r.email || '',
+      slotId: r.slotId, slotLabel: r.slotLabel, date: r.date, registeredAt: r.registeredAt,
+      source: r.source || 'ลงทะเบียนผ่านแอป', checkedIn: !!r.checkedInAt, checkedInAt: r.checkedInAt
+    })).sort((x, y) => (x.date + x.slotId + x.deptName + x.name < y.date + y.slotId + y.deptName + y.name ? -1 : 1));
+    return { activity: adminAct(db, a), registrants: list };
+  }
+  const adminList = (db, me) => db.admins.map(id => {
+    const u = db.users.find(x => x.employeeId === id);
+    const prev = db.regs.filter(x => x.employeeId === id).pop();
+    return { employeeId: id, isMe: id === me.employeeId, name: u ? u.name : (prev ? prev.name : ''),
+      deptName: u ? u.deptName : (prev ? prev.deptName : ''), hasAccount: !!(u && u.password) };
+  });
   const userByToken = (db, token) => {
     if (!token || !String(token).startsWith('demo.')) return null;
     const [, id, pw] = String(token).split('.');
@@ -192,6 +246,64 @@
       return { user: pub(u), items, stats: { total: items.length, attended: items.filter(i => i.status === 'attended').length,
         upcoming: items.filter(i => i.status === 'upcoming').length,
         thisYear: items.filter(i => i.status === 'attended' && i.date.slice(0, 4) === t.slice(0, 4)).length, byType } };
+    },
+
+    /* ---------- ผู้ดูแลระบบ ---------- */
+    adminOverview: (db, r) => {
+      const me = needAdmin(db, r.token);
+      const y = today().slice(0, 4);
+      const activities = db.acts.map(a => adminAct(db, a)).sort((a, b) => (a.date < b.date ? 1 : -1));
+      const yearRegs = db.regs.filter(x => String(x.date).slice(0, 4) === y);
+      return { me: pub(me), types: ['อบรม', 'กิจกรรมรณรงค์', 'กิจกรรมสิ่งแวดล้อม', 'ประชุม/สัมมนา', 'อื่นๆ'], activities,
+        stats: { year: y, activities: activities.filter(a => a.date.slice(0, 4) === y).length, upcoming: activities.filter(a => !a.isPast).length,
+          registrations: yearRegs.length, checkedIn: yearRegs.filter(x => x.checkedInAt).length,
+          people: new Set(yearRegs.map(x => x.employeeId)).size, accounts: db.users.filter(u => u.password).length } };
+    },
+    adminSaveActivity: (db, r) => {
+      needAdmin(db, r.token);
+      const p = r.activity || {};
+      const name = String(p.name || '').trim();
+      if (!name) fail('กรุณาระบุชื่อกิจกรรม');
+      if (!p.activityDate && !String(p.slotsText || '').trim()) fail('กรุณาระบุวันที่จัด หรือรอบวันที่/เวลาอย่างน้อย 1 รอบ');
+      if (p.regStart && p.regEnd && p.regStart > p.regEnd) fail('วันเปิดรับลงทะเบียนต้องไม่เกินวันปิดรับ');
+      const parsed = parseSlots(p.slotsText);
+      const slots = parsed.length ? parsed : [mkSlot(p.activityDate)];
+      let a = p.id ? db.acts.find(x => x.id === p.id) : null;
+      if (p.id && !a) fail('ไม่พบกิจกรรมนี้ในระบบ');
+      if (!a) { a = { id: 'A' + Math.random().toString(16).slice(2, 10).toUpperCase() }; db.acts.push(a); }
+      Object.assign(a, { name, type: p.type || 'อื่นๆ', location: String(p.location || '').trim(), description: String(p.description || '').trim(),
+        requireCheckIn: !!p.requireCheckIn, regStart: p.regStart || '', regEnd: p.regEnd || '',
+        activityDate: p.activityDate || slots[0].date, slots, slotsRaw: parsed.length > 0 });
+      return build(db, a, '');
+    },
+    adminRegistrants: (db, r) => { needAdmin(db, r.token); return registrants(db, r.activityId); },
+    adminCheckIn: (db, r) => {
+      needAdmin(db, r.token);
+      const x = db.regs.find(y => y.activityId === r.activityId && y.regId === r.regId) || fail('ไม่พบรายการลงทะเบียนนี้');
+      x.checkedInAt = r.checked ? nowText() : '';
+      return registrants(db, r.activityId);
+    },
+    adminRemoveReg: (db, r) => {
+      needAdmin(db, r.token);
+      const i = db.regs.findIndex(y => y.activityId === r.activityId && y.regId === r.regId);
+      if (i < 0) fail('ไม่พบรายการลงทะเบียนนี้');
+      db.regs.splice(i, 1);
+      return registrants(db, r.activityId);
+    },
+    adminCheckinQr: (db, r) => {
+      needAdmin(db, r.token);
+      const a = db.acts.find(x => x.id === r.activityId) || fail('ไม่พบกิจกรรมนี้ในระบบ');
+      if (!a.checkinToken) a.checkinToken = Math.random().toString(36).slice(2, 12);
+      a.requireCheckIn = true;
+      return { checkinUrl: `https://script.google.com/macros/s/DEMO/exec?page=checkin&actoken=${a.checkinToken}` };
+    },
+    adminAdmins: (db, r) => adminList(db, needAdmin(db, r.token)),
+    adminSetAdmin: (db, r) => {
+      const me = needAdmin(db, r.token);
+      const id = checkId(r.employeeId);
+      if (r.isAdmin) { if (!db.admins.includes(id)) db.admins.push(id); }
+      else { if (id === me.employeeId) fail('ไม่สามารถถอนสิทธิ์ผู้ดูแลของตนเองได้'); db.admins = db.admins.filter(x => x !== id); }
+      return adminList(db, me);
     }
   };
 
@@ -200,6 +312,7 @@
       return new Promise((resolve) => {
         setTimeout(() => {
           const db = load();
+          curDb = db;
           const h = handlers[action];
           try {
             if (!h) fail('ไม่รู้จักคำสั่ง: ' + action);
