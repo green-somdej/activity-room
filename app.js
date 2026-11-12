@@ -2,6 +2,7 @@
 (function () {
   'use strict';
 
+  const APP_VERSION = '2.0.8'; // ให้ตรงกับ ?v= ใน index.html และ sw.js
   const CONFIG = window.APP_CONFIG || {};
   const DEMO = !CONFIG.API_URL;
   const view = document.getElementById('view');
@@ -47,6 +48,8 @@
     plusCal: '<rect x="3" y="4.5" width="18" height="17" rx="3"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4M12 13v5M9.5 15.5h5"/>',
     shield: '<path d="M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6z"/><path d="m9 12 2 2 4-4"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
+    arrowDown: '<path d="M12 4v15"/><path d="m6 13 6 6 6-6"/>',
+    zap: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
     trash: '<path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 13a1.5 1.5 0 0 0 1.5 1.4h7A1.5 1.5 0 0 0 17 20l1-13"/><path d="M9 7V4.5A1.5 1.5 0 0 1 10.5 3h3A1.5 1.5 0 0 1 15 4.5V7"/>',
     file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
     scan: '<path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><path d="M4 12h16"/>',
@@ -95,7 +98,7 @@
   const firstName = (name) => String(name || '').trim().split(/\s+/)[0] || '';
   const safeFile = (s) => String(s || 'file').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, '_').slice(0, 60);
   const actUrl = (id) => `${location.origin}${location.pathname}?act=${encodeURIComponent(id)}`;
-  const slotOf = (a, id) => (a.slots || []).find((s) => s.id === id);
+  const slotOf = (a, id) => (a.slots || []).find((s) => String(s.id) === String(id));
 
   /* ============================ STATE ============================ */
   const state = {
@@ -261,9 +264,11 @@
         <div class="act-body">
           <h3>${esc(a.name)}</h3>
           <div class="meta">${ic('calendar', 'ic-sm')}<span>${dateRange(a)} · ${a.slots.length} รอบ</span></div>
-          ${mine ? `<div class="meta" style="color:var(--brand-600);font-weight:600">${ic('clock', 'ic-sm')}<span>รอบของคุณ: ${fmtDShort(mine.date)} ${timeLabel(mine)}</span></div>`
+          ${mine ? `<div class="meta" style="color:var(--brand-600);font-weight:600">${ic('clock', 'ic-sm')}<span>รอบของคุณ: ${fmtDShort(mine.date)} ${timeLabel(mine)}</span></div>
+                    ${a.requireCheckIn ? `<div class="meta">${a.myReg.checkedIn ? `<span class="pill pill-ok">${ic('check', 'ic-sm')} เช็คอินแล้ว · เข้าร่วมสำเร็จ</span>` : `<span class="pill pill-warn">${ic('scan', 'ic-sm')} รอเช็คอินหน้างาน</span>`}</div>` : ''}`
                  : (a.slots.length === 1 ? `<div class="meta">${ic('clock', 'ic-sm')}<span>${timeLabel(a.slots[0])}</span></div>` : '')}
           ${a.location ? `<div class="meta">${ic('pin', 'ic-sm')}<span>${esc(a.location)}</span></div>` : ''}
+          ${quickRegHtml(a)}
           <div class="act-foot">
             <span class="people">${ic('users', 'ic-sm')} ${seatsText(a)}</span>
             <span style="display:flex;gap:6px">
@@ -273,6 +278,47 @@
           </div>
         </div>
       </article>`;
+  }
+
+  /** ปุ่มลงทะเบียนด่วนบนการ์ด — ไม่ต้องเข้าไปหน้ารายละเอียด */
+  function quickRegHtml(a) {
+    if (a.myReg || !a.canRegister) return '';
+    const avail = a.slots.filter((s) => !s.past && !s.full);
+    if (!avail.length) return '';
+    const shown = avail.length > 3 ? avail.slice(0, 2) : avail;
+    const btn = (s) => `<button class="qbtn" data-action="quickReg" data-id="${esc(a.id)}" data-slot="${esc(s.id)}">
+      ${a.slots.length === 1 ? `${ic('zap', 'ic-sm')} ลงทะเบียนทันที <small>${timeLabel(s)}</small>`
+        : `<b>${fmtDShort(s.date)}</b><small>${timeLabel(s)}</small>`}</button>`;
+    return `<div class="quick-reg">
+      <span class="qlabel">${ic('zap', 'ic-sm')} ลงทะเบียนด่วน — แตะรอบที่ต้องการ</span>
+      <div class="qbtns ${a.slots.length === 1 ? 'one' : ''}">${shown.map(btn).join('')}
+        ${avail.length > shown.length ? `<button class="qbtn more" data-action="open" data-id="${esc(a.id)}"><b>+${avail.length - shown.length} รอบ</b><small>ดูทั้งหมด</small></button>` : ''}</div>
+    </div>`;
+  }
+
+  async function quickRegister(el) {
+    const a = findAct(el.dataset.id);
+    if (!a) return;
+    if (!state.token) {
+      state.returnTo = '#/act/' + encodeURIComponent(a.id);
+      toast('กรุณาเข้าสู่ระบบก่อน แล้วระบบจะพากลับมาที่กิจกรรมนี้'); go('login'); return;
+    }
+    const html = el.innerHTML;
+    el.closest('.qbtns').querySelectorAll('.qbtn').forEach((b) => { b.disabled = true; });
+    el.innerHTML = '<span class="spinner" style="width:18px;height:18px"></span>';
+    try {
+      const res = await api('register', { activityId: a.id, slotId: el.dataset.slot });
+      putAct(res.activity); state.current = res.activity; state.history = null;
+      const card = el.closest('.act-card');
+      if (card) card.outerHTML = cardHtml(res.activity);
+      successModal(res.activity, slotOf(res.activity, el.dataset.slot), res.moved);
+    } catch (e) {
+      toast(e.message, 'err');
+      if (document.body.contains(el)) {
+        el.innerHTML = html;
+        el.closest('.qbtns').querySelectorAll('.qbtn').forEach((b) => { b.disabled = false; });
+      }
+    }
   }
 
   function installCardHtml() {
@@ -496,13 +542,28 @@
       </div>`;
     }).join('');
 
+    const pickable = a.canRegister && !(mine && mine.checkedIn) && a.slots.some((s) => !s.past && !s.full);
+    const prompt = !mine && pickable
+      ? `<div class="pick-prompt"><span class="pick-arrow">${ic('arrowDown')}</span>
+          <div><b>โปรดเลือกรอบวันและเวลาที่ต้องการ</b><span>แตะปุ่มสีเขียวด้านล่าง 1 ครั้ง = ลงทะเบียนเรียบร้อย</span></div></div>` : '';
     return `<h2 class="card-title">${ic('clock')} เลือกวันและเวลา</h2>
       <p class="muted" style="margin:0;font-size:13.5px">แตะรอบที่ต้องการ = ลงทะเบียนทันที ไม่ต้องกรอกข้อมูลซ้ำ</p>
-      ${notice}${days}`;
+      ${checkinNoticeHtml(a)}${notice}${prompt}${days}`;
+  }
+
+  /** แจ้งเงื่อนไข: การเข้าร่วมจะสำเร็จเมื่อเช็คอินหน้างาน */
+  function checkinNoticeHtml(a) {
+    if (!a.requireCheckIn) return '';
+    if (a.myReg && a.myReg.checkedIn) {
+      return `<div class="tip ok">${ic('check')}<div><b>เข้าร่วมกิจกรรมสำเร็จ</b> — เช็คอินหน้างานแล้ว ${esc(a.myReg.checkedInAt || '')}</div></div>`;
+    }
+    return `<div class="tip checkin-note">${ic('scan')}<div><b>การเข้าร่วมกิจกรรมจะสำเร็จ เมื่อท่านเช็คอินหน้างาน</b><br>
+      ในวันจัดกิจกรรม สแกน QR เช็คอินที่จุดลงทะเบียน แล้วกรอกรหัสพนักงาน${state.user ? ` <b>${esc(state.user.employeeId)}</b>` : ''}
+      ${a.myReg ? '<br><span class="pill pill-warn" style="margin-top:6px">สถานะ: ลงทะเบียนแล้ว · รอเช็คอินหน้างาน</span>' : ''}</div></div>`;
   }
 
   function slotBtnHtml(a, s) {
-    const isMine = a.myReg && a.myReg.slotId === s.id;
+    const isMine = !!a.myReg && String(a.myReg.slotId) === String(s.id);
     const locked = a.myReg && a.myReg.checkedIn;
     const disabled = !isMine && (s.past || s.full || !a.canRegister || locked);
     const pct = s.cap ? Math.min(100, Math.round((s.count / s.cap) * 100)) : 0;
@@ -510,11 +571,17 @@
     if (s.past) seats = 'รอบนี้ผ่านไปแล้ว';
     else if (s.cap) seats = s.full ? 'เต็มแล้ว' : `เหลือ ${s.cap - s.count} ที่ · ${s.count}/${s.cap}`;
     else seats = `${s.count} คน · ไม่จำกัดจำนวน`;
-    return `<button class="slot ${isMine ? 'mine' : ''}" data-action="slot" data-slot="${esc(s.id)}" ${disabled ? 'disabled' : ''} aria-pressed="${isMine ? 'true' : 'false'}">
-      ${isMine ? `<span class="check">${ic('check', 'ic-sm')}</span>` : ''}
+    let cta;
+    if (isMine) cta = `${ic('check', 'ic-sm')} ลงทะเบียนรอบนี้แล้ว`;
+    else if (s.past) cta = 'ผ่านไปแล้ว';
+    else if (s.full) cta = 'เต็มแล้ว';
+    else if (!a.canRegister || locked) cta = 'ไม่เปิดรับ';
+    else cta = `${a.myReg ? 'เปลี่ยนมารอบนี้' : 'แตะเพื่อลงทะเบียน'} ${ic('chevR', 'ic-sm')}`;
+    return `<button class="slot ${isMine ? 'mine' : ''} ${disabled ? '' : 'open'}" data-action="slot" data-slot="${esc(s.id)}" ${disabled ? 'disabled' : ''} aria-pressed="${isMine ? 'true' : 'false'}">
       <span class="time">${timeLabel(s)}</span>
-      <span class="seats">${isMine ? '<b style="color:var(--brand-600)">รอบของคุณ</b> · ' : ''}${seats}</span>
+      <span class="seats">${seats}</span>
       ${s.cap ? `<span class="bar"><i style="width:${pct}%"></i></span>` : ''}
+      <span class="slot-cta">${cta}</span>
     </button>`;
   }
 
@@ -537,7 +604,7 @@
     const slotId = btn.dataset.slot;
     const s = slotOf(a, slotId);
     if (!state.token) { state.returnTo = location.hash; toast('กรุณาเข้าสู่ระบบก่อนลงทะเบียน'); go('login'); return; }
-    if (a.myReg && a.myReg.slotId === slotId) return;
+    if (a.myReg && String(a.myReg.slotId) === String(slotId)) return;
     if (a.myReg) {
       const old = slotOf(a, a.myReg.slotId);
       const ok = await confirmModal('เปลี่ยนรอบ?', `ย้ายจาก <b>${old ? fmtDShort(old.date) + ' ' + timeLabel(old) : 'รอบเดิม'}</b><br>ไปเป็น <b>${fmtDShort(s.date)} ${timeLabel(s)}</b>`, 'ยืนยันเปลี่ยนรอบ');
@@ -579,7 +646,8 @@
         <h3>${moved ? 'เปลี่ยนรอบเรียบร้อย' : 'ลงทะเบียนสำเร็จ!'}</h3>
         <p style="margin:6px 0 0"><b>${esc(a.name)}</b></p>
         <p class="muted" style="margin:6px 0 0">${s ? `${fmtDLong(s.date)}<br>${timeLabel(s)}` : ''}${a.location ? `<br>${esc(a.location)}` : ''}</p>
-        ${a.requireCheckIn ? `<div class="tip" style="text-align:left">${ic('qr')}<div>วันงานให้สแกน QR เช็คอินที่จุดลงทะเบียน แล้วกรอกรหัสพนักงาน ${esc(state.user.employeeId)}</div></div>` : ''}
+        ${a.requireCheckIn ? `<div class="tip checkin-note" style="text-align:left">${ic('scan')}<div><b>การเข้าร่วมกิจกรรมจะสำเร็จ เมื่อท่านเช็คอินหน้างาน</b><br>
+          วันงานให้สแกน QR เช็คอินที่จุดลงทะเบียน แล้วกรอกรหัสพนักงาน <b>${esc(state.user.employeeId)}</b></div></div>` : ''}
         <div style="display:grid;gap:8px;margin-top:20px">
           <button class="btn btn-primary" data-action="ics">${ic('plusCal')} เพิ่มลงปฏิทิน</button>
           <a class="btn btn-ghost" href="#/history">${ic('history')} ดูประวัติของฉัน</a>
@@ -1059,8 +1127,9 @@
 
   function adminDenied() {
     view.innerHTML = emptyHtml('lock', 'สำหรับผู้ดูแลระบบเท่านั้น',
-      'บัญชีนี้ยังไม่มีสิทธิ์ผู้ดูแล — ให้เจ้าของระบบเพิ่มรหัสพนักงานของคุณที่เมนู<br><b>"8) จัดการผู้ดูแลระบบ"</b> ใน Google Sheet แล้วเข้าหน้านี้อีกครั้ง',
-      '<a class="btn btn-primary" href="#/home">กลับหน้าแรก</a>');
+      `บัญชีที่เข้าสู่ระบบอยู่ (รหัสพนักงาน <b>${esc(state.user ? state.user.employeeId : '-')}</b>) ยังไม่มีสิทธิ์ผู้ดูแล<br>
+       ให้เจ้าของระบบเพิ่มรหัสนี้ที่เมนู <b>"8) จัดการผู้ดูแลระบบ"</b> ใน Google Sheet แล้วกดปุ่มตรวจสอบอีกครั้ง`,
+      '<button class="btn btn-primary" data-action="reload">ตรวจสอบสิทธิ์อีกครั้ง</button> <a class="btn btn-ghost" href="#/home">กลับหน้าแรก</a>');
   }
 
   async function renderAdmin(arg) {
@@ -1466,6 +1535,9 @@
         <dl class="kv">
           <dt>หน่วยงาน</dt><dd>${esc(u.deptName || '-')}</dd>
           <dt>อีเมล</dt><dd>${esc(u.email || '-')}</dd>
+          <dt>สิทธิ์การใช้งาน</dt><dd>${u.isAdmin
+            ? `<a href="#/admin" style="color:var(--brand-600)">${ic('shield', 'ic-sm')} ผู้ดูแลระบบ — ไปหน้าจัดการกิจกรรม</a>`
+            : `พนักงานทั่วไป <a href="#/admin" class="muted" style="font-weight:500;font-size:13px">(ตรวจสอบสิทธิ์ผู้ดูแล)</a>`}</dd>
         </dl>
       </section>
 
@@ -1482,7 +1554,7 @@
         </div>
         ${DEMO ? `<div style="margin-top:16px"><button class="btn btn-ghost btn-sm" data-action="resetDemo">ล้างข้อมูลโหมดสาธิต</button></div>` : ''}
       </section>
-      <div class="footer">Green Somdej · เวอร์ชันเว็บแอป 2.0</div>`;
+      <div class="footer">Green Somdej · เวอร์ชันเว็บแอป ${APP_VERSION}${DEMO ? ' · โหมดสาธิต' : ''}</div>`;
   }
 
   function platformsHtml() {
@@ -1757,6 +1829,7 @@
     : (state.acts || []).find((a) => a.id === id) || (state.adminActs || []).find((a) => a.id === id)
       || (adm.reg && adm.reg.activity.id === id ? adm.reg.activity : null));
   const ACTIONS = {
+    quickReg: (el) => quickRegister(el),
     admNew: () => openActForm(''),
     admEdit: (el) => openActForm(el.dataset.id),
     admOpen: (el) => go('admin/act/' + encodeURIComponent(el.dataset.id)),
