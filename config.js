@@ -8,5 +8,17 @@
 window.APP_CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbwUP7_pjZ4AzWCnoyIQ8vgFRadu53aB0SZxg7uOJucHK7k8tIbkHM5EH0K2zXwPwU97/exec',
   ORG_NAME: 'Green Somdej',
-  APP_TITLE: 'ลงทะเบียนกิจกรรมสิ่งแวดล้อม'
+  APP_TITLE: 'ลงทะเบียนกิจกรรมสิ่งแวดล้อม',
+
+  /**
+   * ประกาศความเป็นส่วนตัว (PDPA) — แก้ข้อความด้านล่างให้เป็นของหน่วยงานจริง และให้ผู้รับผิดชอบ/DPO ตรวจก่อนเปิดใช้
+   * VERSION : เปลี่ยนทุกครั้งที่แก้เนื้อหาประกาศ → ผู้ใช้เดิมทุกคนจะถูกขอให้กดรับทราบใหม่เมื่อเข้าสู่ระบบ
+   * RETENTION_YEARS : ต้องตรงกับเมนู "11) ตั้งอายุการเก็บข้อมูล" ในชีต
+   */
+  PRIVACY: {
+    VERSION: '2026-11-v1',
+    CONTROLLER: 'โรงพยาบาล…… (ใส่ชื่อหน่วยงานผู้ควบคุมข้อมูลส่วนบุคคล)',
+    CONTACT: '…… (ใส่อีเมลหรือเบอร์โทรของผู้ดูแลข้อมูลส่วนบุคคล / DPO)',
+    RETENTION_YEARS: 3
+  }
 };

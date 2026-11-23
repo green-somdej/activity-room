@@ -2,8 +2,10 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '2.0.8'; // ให้ตรงกับ ?v= ใน index.html และ sw.js
+  const APP_VERSION = '2.1.1'; // ให้ตรงกับ ?v= ใน index.html และ sw.js
   const CONFIG = window.APP_CONFIG || {};
+  const PRIVACY = Object.assign({ VERSION: '1', CONTROLLER: '-', CONTACT: '-', RETENTION_YEARS: 3 }, CONFIG.PRIVACY || {});
+  const MIN_PW = 8; // ให้ตรงกับ MIN_PASSWORD_LENGTH ใน Api.gs
   const DEMO = !CONFIG.API_URL;
   const view = document.getElementById('view');
 
@@ -1155,6 +1157,7 @@
         <h1 class="page-title" style="margin-top:8px">จัดการกิจกรรม</h1>
         <p class="page-sub">เพิ่ม/แก้ไขกิจกรรม ดูรายชื่อผู้ลงทะเบียน เช็คอินแทน และดาวน์โหลด QR / โปสเตอร์</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-ghost" data-action="admPending">${ic('user')} ตรวจสอบบัญชีใหม่${adm.data && adm.data.stats.pendingUsers ? ` <span class="pill pill-warn" style="margin-left:4px">${adm.data.stats.pendingUsers}</span>` : ''}</button>
         <button class="btn btn-ghost" data-action="admAdmins">${ic('shield')} ผู้ดูแลระบบ</button>
         <button class="btn btn-primary" data-action="admNew">${ic('plus')} เพิ่มกิจกรรม</button>
       </div>
@@ -1367,8 +1370,8 @@
       if (/^[=+\-@]/.test(s)) s = "'" + s; // กันสูตร Excel
       return '"' + s.replace(/"/g, '""') + '"';
     };
-    const head = ['ลำดับ', 'รหัสพนักงาน', 'ชื่อ-นามสกุล', 'หน่วยงาน', 'อีเมล', 'รอบ', 'ลงทะเบียนเมื่อ', 'ช่องทาง', 'เช็คอิน', 'เวลาเช็คอิน'];
-    const rows = filteredRegs().map((x, i) => [i + 1, null, x.name, x.deptName, x.email, slotShort(a, x.slotId, x.slotLabel),
+    const head = ['ลำดับ', 'รหัสพนักงาน', 'ชื่อ-นามสกุล', 'หน่วยงาน', 'รอบ', 'ลงทะเบียนเมื่อ', 'ช่องทาง', 'เช็คอิน', 'เวลาเช็คอิน'];
+    const rows = filteredRegs().map((x, i) => [i + 1, null, x.name, x.deptName, slotShort(a, x.slotId, x.slotLabel),
       x.registeredAt, x.source, x.checkedIn ? 'เช็คอินแล้ว' : 'ยังไม่เช็คอิน', x.checkedInAt]
       .map((v, j) => (j === 1 ? `="${x.employeeId}"` : cell(v))).join(','));
     const csv = '﻿' + [head.map(cell).join(',')].concat(rows).join('\r\n');
@@ -1504,6 +1507,43 @@
     });
   }
 
+  /* ---------- ตรวจสอบบัญชีใหม่ (ยืนยันว่าเป็นเจ้าหน้าที่จริง) ---------- */
+  async function openPendingUsers(list) {
+    if (!list) {
+      openModal(`<div style="text-align:center;padding:30px 0"><span class="spinner" style="color:var(--brand-500)"></span></div>`);
+      try { list = await api('adminPendingUsers'); } catch (e) { closeModal(); toast(e.message, 'err'); return; }
+    }
+    if (adm.data) adm.data.stats.pendingUsers = list.length;
+    openModal(`
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+        <div><h3>ตรวจสอบบัญชีใหม่</h3><p class="muted" style="margin:2px 0 0;font-size:13.5px">เทียบรหัสพนักงาน ชื่อ และหน่วยงานกับทะเบียนบุคลากร (HR) แล้วเลือก อนุมัติ หรือ ไม่อนุมัติ</p></div>
+        <button class="icon-btn" data-action="closeModal" aria-label="ปิด">${ic('x')}</button>
+      </div>
+      <div class="admin-list">${list.length ? list.map((x) => `
+        <div class="admin-item" style="flex-wrap:wrap">
+          <span class="avatar">${esc(initials(x.name || '?'))}</span>
+          <div style="flex:1;min-width:200px"><b>${esc(x.name)}</b> <span class="pill pill-soft">${esc(x.employeeId)}</span>
+            <small class="muted" style="display:block">${esc(x.deptName || '-')}${x.email ? ' · ' + esc(x.email) : ''} · สมัครเมื่อ ${esc(x.createdAt || '-')}</small>
+            ${x.previousRegistrations ? `<small class="muted" style="display:block">มีประวัติลงทะเบียนเดิมของรหัสนี้ ${x.previousRegistrations} รายการ${x.previousName && x.previousName !== x.name ? ` · ชื่อในประวัติ: <b style="color:var(--warn-fg)">${esc(x.previousName)}</b>` : ''}</small>` : ''}</div>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-primary btn-sm" data-action="admReview" data-ok="1" data-emp="${esc(x.employeeId)}">${ic('check', 'ic-sm')} อนุมัติ</button>
+            <button class="btn btn-ghost btn-sm" data-action="admReview" data-ok="0" data-emp="${esc(x.employeeId)}">ไม่อนุมัติ</button>
+          </div>
+        </div>`).join('') : `<p class="muted" style="text-align:center;padding:24px 0">ไม่มีบัญชีที่รอตรวจสอบ</p>`}</div>`);
+  }
+
+  async function reviewUser(emp, approve) {
+    if (!approve) {
+      const ok = await confirmModal('ไม่อนุมัติบัญชีนี้?', `บัญชีรหัสพนักงาน <b>${esc(emp)}</b> จะถูกลบ ผู้สมัครกลับมาสมัครใหม่ได้`, 'ไม่อนุมัติ', true);
+      if (!ok) { openPendingUsers(); return; }
+    }
+    try {
+      const list = await api('adminReviewUser', { employeeId: emp, approve: approve });
+      toast(approve ? 'อนุมัติแล้ว' : 'ลบบัญชีที่ไม่อนุมัติแล้ว', 'ok');
+      openPendingUsers(list);
+    } catch (e) { toast(e.message, 'err'); openPendingUsers(); }
+  }
+
   async function admRevoke(el) {
     const emp = el.dataset.emp;
     const ok = await confirmModal('ถอนสิทธิ์ผู้ดูแล?', `รหัสพนักงาน <b>${esc(emp)}</b> จะใช้งานได้แบบพนักงานทั่วไป`, 'ถอนสิทธิ์', true);
@@ -1517,6 +1557,7 @@
     const u = state.user;
     const theme = LS.get('gs_theme') || 'auto';
     view.innerHTML = `
+      ${u.status === 'pending' ? `<div class="tip warn" style="margin-bottom:14px">${ic('info')}<div><b>บัญชีรอผู้ดูแลตรวจสอบ</b> — ตอนนี้ลงทะเบียนกิจกรรมได้ แต่การเข้าสู่ระบบครั้งถัดไปต้องรอการอนุมัติ</div></div>` : ''}
       <section class="card card-pad">
         <div class="profile-head">
           <span class="avatar xl">${esc(initials(u.name))}</span>
@@ -1539,6 +1580,14 @@
             ? `<a href="#/admin" style="color:var(--brand-600)">${ic('shield', 'ic-sm')} ผู้ดูแลระบบ — ไปหน้าจัดการกิจกรรม</a>`
             : `พนักงานทั่วไป <a href="#/admin" class="muted" style="font-weight:500;font-size:13px">(ตรวจสอบสิทธิ์ผู้ดูแล)</a>`}</dd>
         </dl>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><div><h2>ข้อมูลส่วนบุคคลของฉัน</h2><p>ดูว่าระบบเก็บข้อมูลอะไร และลบบัญชีของตนเองได้ (PDPA)</p></div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-ghost" data-action="privacy">${ic('shield')} ประกาศความเป็นส่วนตัว</button>
+          <button class="btn btn-danger" data-action="deleteAccount">${ic('trash')} ลบบัญชีและข้อมูลของฉัน</button>
+        </div>
       </section>
 
       <section class="section">
@@ -1602,7 +1651,7 @@
       <form id="pw-form" style="margin-top:16px">
         <div class="form-error" id="pw-err"></div>
         <div class="field"><label>รหัสผ่านเดิม</label>${pwInput('oldPassword', 'current-password')}</div>
-        <div class="field"><label>รหัสผ่านใหม่ (อย่างน้อย 6 ตัวอักษร)</label>${pwInput('newPassword', 'new-password')}</div>
+        <div class="field"><label>รหัสผ่านใหม่ (อย่างน้อย ${MIN_PW} ตัวอักษร)</label>${pwInput('newPassword', 'new-password')}</div>
         <div class="field"><label>ยืนยันรหัสผ่านใหม่</label>${pwInput('confirm', 'new-password')}</div>
         <div class="modal-actions"><button type="button" class="btn btn-ghost" data-action="closeModal">ยกเลิก</button><button class="btn btn-primary">เปลี่ยนรหัสผ่าน</button></div>
       </form>`);
@@ -1617,6 +1666,9 @@
   /* ============================= AUTH ============================= */
   const pwInput = (name, ac) => `<div class="input-wrap"><input class="input" type="password" name="${name}" autocomplete="${ac}" required>
     <button type="button" class="eye" data-action="togglePw" aria-label="แสดงรหัสผ่าน">${ic('eye', 'ic-sm')}</button></div>`;
+  // ช่องรหัสพนักงาน: ซ่อนตัวเลขขณะพิมพ์ (กดรูปตาเพื่อแสดงได้) ยังรับเฉพาะตัวเลข 7 หลัก
+  const idInput = (id, value) => `<div class="input-wrap"><input class="input code" id="${id}" type="password" name="employeeId" inputmode="numeric" maxlength="7" placeholder="0000000" autocomplete="off" value="${esc(value || '')}" required>
+    <button type="button" class="eye" data-action="togglePw" aria-label="แสดงรหัสพนักงาน">${ic('eye', 'ic-sm')}</button></div>`;
 
   async function renderLogin(mode) {
     mode = mode === 'signup' ? 'signup' : 'login';
@@ -1648,19 +1700,16 @@
           ${mode === 'login' ? `
           <form id="login-form" novalidate>
             <div class="form-error" id="auth-err"></div>
-            <div class="field"><label for="lg-id">รหัสพนักงาน</label>
-              <input class="input code" id="lg-id" name="employeeId" inputmode="numeric" maxlength="7" placeholder="0000000" autocomplete="username" value="${esc(lastEmp)}" required></div>
+            <div class="field"><label for="lg-id">รหัสพนักงาน</label>${idInput('lg-id', lastEmp)}</div>
             <div class="field"><label>รหัสผ่าน</label>${pwInput('password', 'current-password')}</div>
             <button class="btn btn-primary btn-lg btn-block" style="margin-top:6px">${ic('user')} เข้าสู่ระบบ</button>
-            <p class="muted" style="font-size:13px;text-align:center;margin-top:14px">ลืมรหัสผ่าน? ติดต่อผู้ดูแลระบบเพื่อรีเซ็ต แล้วเลือก "ใช้งานครั้งแรก"</p>
+            <p class="muted" style="font-size:13px;text-align:center;margin-top:14px">ยังไม่เคยตั้งรหัสผ่าน? เลือก <a href="#/login/signup" data-action="authMode" data-v="signup"><b>ใช้งานครั้งแรก</b></a> · ลืมรหัสผ่าน ติดต่อผู้ดูแลระบบเพื่อรีเซ็ต</p>
             <div class="tip" style="margin-top:10px">${ic('shield')}<div><b>ผู้ดูแลระบบ</b> เข้าสู่ระบบที่นี่ด้วยรหัสพนักงานของตนเอง แล้วจะเห็นเมนู <b>ผู้ดูแล</b> สำหรับจัดการกิจกรรม</div></div>
+            <p class="muted" style="font-size:13px;text-align:center;margin-top:14px"><a href="#" data-action="privacy">ประกาศความเป็นส่วนตัว</a></p>
           </form>` : `
           <form id="signup-form" novalidate>
             <div class="form-error" id="auth-err"></div>
-            <div class="field"><label for="su-id">รหัสพนักงาน (7 หลัก)</label>
-              <input class="input code" id="su-id" name="employeeId" inputmode="numeric" maxlength="7" placeholder="0000000" autocomplete="username" required>
-              <span class="hint" id="su-hint">กรอกรหัสแล้ว ระบบจะดึงชื่อ-หน่วยงานที่เคยลงทะเบียนไว้ให้อัตโนมัติ</span></div>
-            <div id="su-note"></div>
+            <div class="field"><label for="su-id">รหัสพนักงาน (7 หลัก)</label>${idInput('su-id', '')}</div>
             <div class="field"><label>ชื่อ-นามสกุล</label><input class="input" name="name" autocomplete="name" placeholder="เช่น สมชาย ใจดี" required></div>
             <div class="field"><label>หน่วยงาน</label><select class="input" name="deptId" id="su-dept"><option value="">กำลังโหลด...</option></select></div>
             <div class="field"><label>อีเมล (ไม่บังคับ)</label><input class="input" name="email" type="email" autocomplete="email" placeholder="ใช้รับลิงก์แบบประเมินหลังจบกิจกรรม"></div>
@@ -1668,7 +1717,11 @@
               <div class="field"><label>ตั้งรหัสผ่าน</label>${pwInput('password', 'new-password')}</div>
               <div class="field"><label>ยืนยันรหัสผ่าน</label>${pwInput('confirm', 'new-password')}</div>
             </div>
-            <span class="hint" style="display:block;margin:-6px 0 14px;font-size:12.5px;color:var(--muted)">อย่างน้อย 6 ตัวอักษร</span>
+            <span class="hint" style="display:block;margin:-6px 0 14px;font-size:12.5px;color:var(--muted)">อย่างน้อย ${MIN_PW} ตัวอักษร</span>
+            <div class="tip" style="margin:0 0 14px">${ic('info')}<div>หลังสมัคร <b>ผู้ดูแลระบบจะตรวจสอบว่าเป็นเจ้าหน้าที่จริง</b> ก่อน คุณลงทะเบียนกิจกรรมต่อได้ทันที แต่การเข้าสู่ระบบครั้งถัดไปต้องรอการอนุมัติ</div></div>
+            <label style="display:flex;gap:10px;align-items:flex-start;margin:0 0 16px;font-size:14px;cursor:pointer">
+              <input type="checkbox" name="ack" style="margin-top:4px;width:18px;height:18px;flex:none">
+              <span>ข้าพเจ้าได้อ่านและรับทราบ <a href="#" data-action="privacy"><b>ประกาศความเป็นส่วนตัว</b></a> เกี่ยวกับการเก็บและใช้ข้อมูลส่วนบุคคลของระบบนี้แล้ว</span></label>
             <button class="btn btn-primary btn-lg btn-block">${ic('check')} สร้างบัญชีและเข้าสู่ระบบ</button>
           </form>`}
         </div>
@@ -1686,52 +1739,24 @@
           const r = await api('login', { employeeId: f.employeeId.value, password: f.password.value });
           afterLogin(r);
         } catch (e) {
-          if (e.code === 'NO_ACCOUNT') { LS.set('gs_last_emp', f.employeeId.value); go('login/signup'); toast(e.message); return; }
+          if (e.code === 'BAD_LOGIN') LS.del('gs_last_emp');
           throw e;
         }
       });
     } else {
       const f = document.getElementById('signup-form');
       f.employeeId.focus();
-      loadDepts().then((d) => { const sel = document.getElementById('su-dept'); if (sel) { const v = sel.value; sel.innerHTML = deptOptions(d, v || sel.dataset.want); } })
+      loadDepts().then((d) => { const sel = document.getElementById('su-dept'); if (sel) sel.innerHTML = deptOptions(d, ''); })
         .catch((e) => toast(e.message, 'err'));
-      let lastLookup = '';
-      const lookup = async () => {
-        const id = f.employeeId.value;
-        const note = document.getElementById('su-note');
-        if (id.length !== 7) { lastLookup = ''; note.innerHTML = ''; return; }
-        if (id === lastLookup) return;
-        lastLookup = id;
-        note.innerHTML = `<div class="autofill-note" style="background:var(--bg-soft);color:var(--muted)"><span class="spinner" style="width:16px;height:16px"></span> กำลังค้นหาข้อมูล...</div>`;
-        try {
-          const r = await api('lookupEmployee', { employeeId: id });
-          if (f.employeeId.value !== id) return;
-          if (r.hasAccount) {
-            note.innerHTML = `<div class="tip warn" style="margin:0 0 14px">${ic('info')}<div>รหัสนี้มีบัญชีแล้ว (${esc(r.name)}) <a href="#/login" data-action="authMode" data-v="login"><b>เข้าสู่ระบบที่นี่</b></a></div></div>`;
-            LS.set('gs_last_emp', id);
-          } else if (r.found) {
-            f.name.value = r.name || '';
-            const sel = document.getElementById('su-dept');
-            sel.dataset.want = r.deptId || '';
-            if (sel.querySelector(`option[value="${CSS.escape(r.deptId || '')}"]`)) sel.value = r.deptId;
-            note.innerHTML = `<div class="autofill-note">${ic('check', 'ic-sm')} พบข้อมูลจากการลงทะเบียนครั้งก่อน — เติมชื่อและหน่วยงานให้อัตโนมัติแล้ว</div>`;
-            f.password.focus();
-          } else {
-            note.innerHTML = '';
-            f.name.focus();
-          }
-        } catch (e) { note.innerHTML = ''; lastLookup = ''; }
-      };
-      f.employeeId.addEventListener('input', lookup);
-      const pre = LS.get('gs_last_emp');
-      if (pre && !state.token) { f.employeeId.value = pre; lookup(); }
       bindForm('signup-form', 'auth-err', async (f) => {
         if (!/^\d{7}$/.test(f.employeeId.value)) throw new Error('กรุณากรอกรหัสพนักงานให้ครบ 7 หลัก');
         if (!f.name.value.trim()) throw new Error('กรุณากรอกชื่อ-นามสกุล');
         if (!f.deptId.value) throw new Error('กรุณาเลือกหน่วยงาน');
-        if (f.password.value.length < 6) throw new Error('รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร');
+        if (f.password.value.length < MIN_PW) throw new Error(`รหัสผ่านต้องมีอย่างน้อย ${MIN_PW} ตัวอักษร`);
         if (f.password.value !== f.confirm.value) throw new Error('รหัสผ่านทั้งสองช่องไม่ตรงกัน');
-        const r = await api('signup', { employeeId: f.employeeId.value, name: f.name.value, deptId: f.deptId.value, email: f.email.value, password: f.password.value });
+        if (!f.ack.checked) throw new Error('กรุณาติ๊กรับทราบประกาศความเป็นส่วนตัวก่อน');
+        const r = await api('signup', { employeeId: f.employeeId.value, name: f.name.value, deptId: f.deptId.value, email: f.email.value,
+          password: f.password.value, ack: true, noticeVersion: PRIVACY.VERSION });
         afterLogin(r, true);
       });
     }
@@ -1739,11 +1764,67 @@
 
   function afterLogin(r, isNew) {
     setSession(r.token, r.user);
-    toast(isNew ? `ยินดีต้อนรับ คุณ${firstName(r.user.name)} — สร้างบัญชีเรียบร้อย` : `ยินดีต้อนรับกลับ คุณ${firstName(r.user.name)}`, 'ok');
+    const pending = r.user.status === 'pending';
+    toast(isNew ? `สร้างบัญชีเรียบร้อย — คุณ${firstName(r.user.name)}` : `ยินดีต้อนรับกลับ คุณ${firstName(r.user.name)}`, 'ok');
     if (r.user.isAdmin) setTimeout(() => toast('บัญชีนี้มีสิทธิ์ผู้ดูแลระบบ — ดูเมนู "ผู้ดูแล"'), 600);
     const back = state.returnTo && !/login/.test(state.returnTo) ? state.returnTo : '#/home';
     state.returnTo = null;
     location.hash = back;
+    if (pending) setTimeout(openPendingNotice, 500);
+    else setTimeout(maybeAskNotice, 800);
+  }
+
+  function openPendingNotice() {
+    openModal(`<h3>รอผู้ดูแลตรวจสอบบัญชี</h3>
+      <div class="tip warn" style="margin:12px 0">${ic('info')}<div>ผู้ดูแลระบบจะตรวจสอบว่าคุณเป็นเจ้าหน้าที่จริงก่อน ตอนนี้คุณลงทะเบียนกิจกรรมได้ตามปกติ แต่<b>การเข้าสู่ระบบครั้งถัดไปจะทำได้ต่อเมื่อได้รับการอนุมัติแล้ว</b> และจะเห็นประวัติการเข้าร่วมเดิมได้หลังอนุมัติ หากรอนานให้ติดต่อผู้ดูแลระบบ</div></div>
+      <div class="modal-actions"><button class="btn btn-primary" data-action="closeModal">รับทราบ</button></div>`);
+  }
+
+  /* ========================= PDPA: ประกาศความเป็นส่วนตัว ========================= */
+  function noticeHtml() {
+    const yrs = PRIVACY.RETENTION_YEARS || 3;
+    return `
+      <p class="muted" style="margin:0 0 12px;font-size:13px">เวอร์ชัน ${esc(PRIVACY.VERSION)}</p>
+      <div style="max-height:56vh;overflow:auto;padding-right:6px;font-size:14.5px;line-height:1.65">
+        <p><b>ผู้ควบคุมข้อมูลส่วนบุคคล:</b> ${esc(PRIVACY.CONTROLLER)}<br><b>ติดต่อเรื่องข้อมูลส่วนบุคคล:</b> ${esc(PRIVACY.CONTACT)}</p>
+        <p><b>1. ข้อมูลที่เก็บ</b><br>รหัสพนักงาน ชื่อ-นามสกุล หน่วยงาน และอีเมล (ถ้าท่านกรอก) ที่ท่านให้ไว้ตอนสมัคร · รหัสผ่านที่ท่านตั้ง (เก็บเป็นค่าเข้ารหัสทางเดียว ไม่มีผู้ใดอ่านรหัสผ่านจริงได้) · ประวัติการลงทะเบียนและเช็คอินกิจกรรม · วันเวลาเข้าสู่ระบบล่าสุด · บันทึกว่าท่านรับทราบประกาศนี้เมื่อใด</p>
+        <p><b>2. วัตถุประสงค์</b><br>ยืนยันตัวตนผู้ใช้ (ผู้ดูแลระบบตรวจสอบว่าเป็นเจ้าหน้าที่จริงก่อนอนุมัติบัญชี) · ลงทะเบียน/ยกเลิก/เช็คอินเข้าร่วมกิจกรรมด้านสิ่งแวดล้อมและการอบรม · จัดทำรายงานสถิติภายในหน่วยงาน · ส่งลิงก์แบบประเมินกิจกรรม · ตรวจสอบย้อนหลังเพื่อความปลอดภัยของระบบ</p>
+        <p><b>3. ผู้ที่เข้าถึงข้อมูลได้</b><br>เฉพาะผู้ดูแลระบบที่ได้รับมอบหมาย โดยทุกครั้งที่ผู้ดูแลเปิดดูรายชื่อหรือแก้ไขข้อมูลจะมีบันทึกไว้ตรวจสอบ ไม่เปิดเผยข้อมูลแก่บุคคลภายนอก ข้อมูลจัดเก็บบนบริการ Google (Google Workspace / Apps Script) ซึ่งเซิร์ฟเวอร์อาจอยู่นอกประเทศไทย</p>
+        <p><b>4. ระยะเวลาเก็บ</b><br>เก็บไม่เกิน ${yrs} ปีนับจากวันจัดกิจกรรมหรือวันที่ใช้งานล่าสุด หลังจากนั้นระบบจะลบบัญชี และปกปิดตัวตนในประวัติ (เหลือเฉพาะสถิติที่ระบุตัวบุคคลไม่ได้)</p>
+        <p><b>5. สิทธิของท่าน</b><br>ขอเข้าถึง แก้ไข ลบ ระงับหรือคัดค้านการใช้ข้อมูล และถอนความยินยอมได้ — แก้ไขข้อมูลและ <b>ลบบัญชีด้วยตนเอง</b> ได้ที่เมนู “โปรไฟล์” หรือติดต่อตามช่องทางด้านบน ท่านมีสิทธิร้องเรียนต่อสำนักงานคณะกรรมการคุ้มครองข้อมูลส่วนบุคคล</p>
+        <p><b>6. การรักษาความปลอดภัย</b><br>ตรวจสอบและอนุมัติบัญชีใหม่โดยผู้ดูแลระบบ · ซ่อนตัวเลขรหัสพนักงานขณะพิมพ์ · จำกัดจำนวนครั้งที่ใส่รหัสผ่านผิด · จำกัดสิทธิ์ผู้ดูแล · เก็บข้อมูลส่วนบุคคลไว้ในไฟล์แยกที่ไม่แชร์ให้ผู้ใช้ทั่วไป</p>
+      </div>`;
+  }
+
+  function openPrivacy(askAck) {
+    openModal(`<h3>ประกาศความเป็นส่วนตัว</h3>${noticeHtml()}
+      <div class="modal-actions">${askAck
+        ? `<button class="btn btn-primary" data-action="ackNotice">${ic('check')} รับทราบ</button>`
+        : `<button class="btn btn-primary" data-action="closeModal">ปิด</button>`}</div>`);
+  }
+
+  /** ผู้ใช้เดิมที่ยังไม่เคยรับทราบประกาศฉบับปัจจุบัน → ขอให้รับทราบหลังเข้าสู่ระบบ */
+  function maybeAskNotice() {
+    if (!state.token || !state.user) return;
+    if (state.user.noticeVersion === PRIVACY.VERSION) return;
+    if (document.querySelector('#modal-root .modal')) return;
+    openPrivacy(true);
+  }
+
+  function openDeleteAccount() {
+    openModal(`<h3>ลบบัญชีและข้อมูลของฉัน</h3>
+      <div class="tip warn" style="margin:12px 0">${ic('alert')}<div>การลบนี้<b>ย้อนกลับไม่ได้</b> ระบบจะลบบัญชี ยกเลิกการลงทะเบียนกิจกรรมที่ยังไม่ถึงวัน และปกปิดตัวตนในประวัติที่ผ่านมา (เหลือไว้เป็นสถิติที่ระบุตัวท่านไม่ได้) หากต้องการใช้งานอีกต้องสร้างบัญชีใหม่</div></div>
+      <form id="del-form">
+        <div class="form-error" id="del-err"></div>
+        <div class="field"><label>ยืนยันด้วยรหัสผ่านของคุณ</label>${pwInput('password', 'current-password')}</div>
+        <div class="modal-actions"><button type="button" class="btn btn-ghost" data-action="closeModal">ยกเลิก</button><button class="btn btn-danger">${ic('trash')} ลบบัญชีถาวร</button></div>
+      </form>`);
+    bindForm('del-form', 'del-err', async (f) => {
+      if (!f.password.value) throw new Error('กรุณากรอกรหัสผ่าน');
+      await api('deleteAccount', { password: f.password.value });
+      closeModal(); clearSession(); LS.del('gs_last_emp');
+      toast('ลบบัญชีและข้อมูลของคุณแล้ว', 'ok'); go('home');
+    });
   }
 
   function bindForm(formId, errId, handler) {
@@ -1901,6 +1982,16 @@
     setTheme: (el) => { LS.set('gs_theme', el.dataset.v); applyTheme(); renderChrome(); renderProfile(); },
     editProfile: () => editProfile().catch((e) => toast(e.message, 'err')),
     changePw: () => changePw(),
+    privacy: () => openPrivacy(false),
+    admPending: () => openPendingUsers(),
+    admReview: (el) => reviewUser(el.dataset.emp, el.dataset.ok === '1'),
+    deleteAccount: () => openDeleteAccount(),
+    ackNotice: async () => {
+      try {
+        const u = await api('ackNotice', { noticeVersion: PRIVACY.VERSION });
+        state.user = u; LS.set('gs_user', u); closeModal(); toast('บันทึกการรับทราบแล้ว', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+    },
     logout: async () => {
       const ok = await confirmModal('ออกจากระบบ?', 'คุณสามารถเข้าสู่ระบบใหม่ได้ทุกเมื่อด้วยรหัสพนักงาน', 'ออกจากระบบ', true);
       if (!ok) return;
@@ -1936,7 +2027,7 @@
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => renderChrome());
 
   if (DEMO) {
-    document.getElementById('demo-bar').innerHTML = `<div class="demo-bar">โหมดสาธิต — ข้อมูลตัวอย่างเก็บในเบราว์เซอร์นี้เท่านั้น · ลองรหัส <b>1234567</b> ที่ "ใช้งานครั้งแรก" เพื่อดูการเติมชื่ออัตโนมัติ · ผู้ดูแลทดลอง: <b>9999999</b> / <b>admin1234</b></div>`;
+    document.getElementById('demo-bar').innerHTML = `<div class="demo-bar">โหมดสาธิต — ข้อมูลตัวอย่างเก็บในเบราว์เซอร์นี้เท่านั้น · สมัครใหม่แล้วต้องให้ผู้ดูแลอนุมัติจึงเข้าครั้งต่อไปได้ · ผู้ดูแลทดลอง: <b>9999999</b> / <b>admin1234</b></div>`;
   }
 
   // ลิงก์จาก QR: ?act=ID → เปิดหน้ากิจกรรมนั้น
@@ -1949,7 +2040,7 @@
   route();
 
   if (state.token) {
-    api('me').then((u) => { state.user = u; LS.set('gs_user', u); renderChrome(); }).catch(() => {});
+    api('me').then((u) => { state.user = u; LS.set('gs_user', u); renderChrome(); maybeAskNotice(); }).catch(() => {});
   }
 
   if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {

@@ -1,7 +1,7 @@
 /**
  * โหมดสาธิต — จำลอง API ของ Apps Script ไว้ในเบราว์เซอร์ (localStorage)
  * ใช้เมื่อยังไม่ได้ใส่ API_URL ใน config.js เท่านั้น
- * ตัวอย่าง: รหัสพนักงาน 1234567 เคยลงทะเบียนมาก่อน (ยังไม่มีบัญชี) → ลอง "ใช้งานครั้งแรก" จะเห็นชื่อขึ้นอัตโนมัติ
+ * ตัวอย่าง: สมัครที่ "ใช้งานครั้งแรก" (บัญชีใหม่รอผู้ดูแลอนุมัติ) แล้วเข้า 9999999 / admin1234 เพื่อกดอนุมัติ
  */
 (function () {
   const KEY = 'gs_demo_db_v1';
@@ -52,6 +52,12 @@
     return { depts, acts, regs, users: [] };
   }
 
+  const pendingList = (db) => db.users.filter(u => u.password && u.status === 'pending').map(u => {
+    const prev = db.regs.filter(x => x.employeeId === u.employeeId);
+    return { employeeId: u.employeeId, name: u.name, deptName: u.deptName, email: u.email || '', createdAt: u.createdAt || '',
+      previousRegistrations: prev.length, previousName: prev.length ? prev[prev.length - 1].name : '', previousDept: prev.length ? prev[prev.length - 1].deptName : '' };
+  });
+
   // บัญชีผู้ดูแลสำหรับทดลองในโหมดสาธิตเท่านั้น
   const DEMO_ADMIN = { employeeId: '9999999', password: 'admin1234', name: 'ผู้ดูแลระบบ ทดลอง', deptId: 'D007', deptName: 'งานบริหารทั่วไป', email: '' };
 
@@ -71,7 +77,7 @@
   const fail = (message, code) => { const e = new Error(message); e.code = code || 'ERROR'; throw e; };
   let curDb = null; // ให้ pub() รู้รายชื่อผู้ดูแล
   const pub = (u) => ({ employeeId: u.employeeId, name: u.name, deptId: u.deptId, deptName: u.deptName, email: u.email || '',
-    isAdmin: !!(curDb && curDb.admins.includes(u.employeeId)) });
+    isAdmin: !!(curDb && curDb.admins.includes(u.employeeId)), noticeVersion: u.noticeVersion || '', status: u.status || 'approved' });
   const needAdmin = (db, token) => {
     const u = need(db, token);
     if (!db.admins.includes(u.employeeId)) fail('บัญชีนี้ไม่มีสิทธิ์ผู้ดูแลระบบ', 'FORBIDDEN');
@@ -102,7 +108,7 @@
   function registrants(db, id) {
     const a = db.acts.find(x => x.id === id) || fail('ไม่พบกิจกรรมนี้ในระบบ', 'NOT_FOUND');
     const list = db.regs.filter(r => r.activityId === id).map(r => ({
-      regId: r.regId, employeeId: r.employeeId, name: r.name, deptName: r.deptName, email: r.email || '',
+      regId: r.regId, employeeId: r.employeeId, name: r.name, deptName: r.deptName,
       slotId: r.slotId, slotLabel: r.slotLabel, date: r.date, registeredAt: r.registeredAt,
       source: r.source || 'ลงทะเบียนผ่านแอป', checkedIn: !!r.checkedInAt, checkedInAt: r.checkedInAt
     })).sort((x, y) => (x.date + x.slotId + x.deptName + x.name < y.date + y.slotId + y.deptName + y.name ? -1 : 1));
@@ -152,30 +158,52 @@
   const handlers = {
     ping: () => ({ name: 'Demo API', time: new Date().toISOString() }),
     departments: (db) => db.depts.slice().sort((a, b) => a.name.localeCompare(b.name, 'th')),
-    lookupEmployee: (db, r) => {
-      const id = checkId(r.employeeId);
-      const u = db.users.find(x => x.employeeId === id);
-      if (u) return { found: true, hasAccount: !!u.password, name: u.name, deptId: u.deptId, deptName: u.deptName };
-      const prev = db.regs.filter(x => x.employeeId === id).pop();
-      return prev ? { found: true, hasAccount: false, name: prev.name, deptId: prev.deptId, deptName: prev.deptName } : { found: false, hasAccount: false };
-    },
+    // โหมดสาธิต: สมัครเองเหมือนระบบจริง บัญชีใหม่เป็น pending (ใช้ต่อได้ในรอบนี้ ครั้งต่อไป Login ไม่ได้จนกว่าผู้ดูแลอนุมัติ)
     signup: (db, r) => {
       const id = checkId(r.employeeId);
       if (!String(r.name || '').trim()) fail('กรุณากรอกชื่อ-นามสกุล');
-      if (String(r.password || '').length < 6) fail('รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร');
+      if (String(r.password || '').length < 8) fail('รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร');
+      if (r.ack !== true) fail('กรุณารับทราบประกาศความเป็นส่วนตัวก่อนใช้งาน', 'NO_ACK');
       const dept = db.depts.find(d => d.id === r.deptId) || fail('กรุณาเลือกหน่วยงาน');
       let u = db.users.find(x => x.employeeId === id);
-      if (u && u.password) fail('รหัสพนักงานนี้มีบัญชีแล้ว กรุณาเข้าสู่ระบบ', 'HAS_ACCOUNT');
+      if (u && u.password) fail('รหัสพนักงานนี้มีบัญชีแล้ว กรุณาเข้าสู่ระบบ (ลืมรหัสผ่าน ติดต่อผู้ดูแลระบบ)', 'HAS_ACCOUNT');
       if (!u) { u = { employeeId: id }; db.users.push(u); }
-      Object.assign(u, { name: r.name.trim(), deptId: dept.id, deptName: dept.name, email: r.email || '', password: r.password });
+      Object.assign(u, { name: r.name.trim(), deptId: dept.id, deptName: dept.name, email: r.email || '', password: r.password,
+        noticeVersion: String(r.noticeVersion || ''), createdAt: nowText(), status: db.admins.includes(id) ? 'approved' : 'pending' });
       return { token: mkToken(u), user: pub(u) };
     },
     login: (db, r) => {
       const id = checkId(r.employeeId);
       const u = db.users.find(x => x.employeeId === id);
-      if (!u || !u.password) fail('ยังไม่มีบัญชีสำหรับรหัสพนักงานนี้ กรุณาเลือก "ใช้งานครั้งแรก"', 'NO_ACCOUNT');
-      if (u.password !== r.password) fail('รหัสผ่านไม่ถูกต้อง', 'BAD_PASSWORD');
+      if (!u || !u.password || u.password !== r.password) fail('รหัสพนักงานหรือรหัสผ่านไม่ถูกต้อง (ถ้ายังไม่เคยตั้งรหัสผ่าน ให้เลือก "ใช้งานครั้งแรก")', 'BAD_LOGIN');
+      if (u.status === 'pending') fail('บัญชีของคุณอยู่ระหว่างรอผู้ดูแลระบบตรวจสอบว่าเป็นเจ้าหน้าที่ กรุณารอการอนุมัติ (ติดต่อผู้ดูแลระบบหากรอนาน) แล้วเข้าสู่ระบบอีกครั้ง', 'PENDING');
       return { token: mkToken(u), user: pub(u) };
+    },
+    adminPendingUsers: (db, r) => { needAdmin(db, r.token); return pendingList(db); },
+    adminReviewUser: (db, r) => {
+      const me = needAdmin(db, r.token);
+      const id = checkId(r.employeeId);
+      if (id === me.employeeId) fail('ไม่สามารถตรวจสอบบัญชีของตนเองได้');
+      const u = db.users.find(x => x.employeeId === id) || fail('ไม่พบบัญชีนี้ (อาจถูกจัดการไปแล้ว)');
+      if (r.approve === true) u.status = 'approved';
+      else { if (u.status !== 'pending') fail('บัญชีนี้ได้รับการอนุมัติแล้ว ไม่สามารถปฏิเสธได้'); db.users = db.users.filter(x => x !== u); }
+      return pendingList(db);
+    },
+    ackNotice: (db, r) => {
+      const u = need(db, r.token);
+      u.noticeVersion = String(r.noticeVersion || '');
+      return pub(u);
+    },
+    deleteAccount: (db, r) => {
+      const u = need(db, r.token);
+      if (u.password !== r.password) fail('รหัสผ่านไม่ถูกต้อง');
+      if (db.admins.includes(u.employeeId)) fail('บัญชีผู้ดูแลระบบต้องให้ผู้ดูแลคนอื่นถอนสิทธิ์ก่อน จึงจะลบบัญชีได้');
+      const t = today();
+      const anon = 'ANON-' + Math.random().toString(16).slice(2, 10).toUpperCase();
+      db.regs = db.regs.filter(x => !(x.employeeId === u.employeeId && !x.checkedInAt && x.date >= t));
+      db.regs.forEach(x => { if (x.employeeId === u.employeeId) { x.employeeId = anon; x.name = 'ข้อมูลถูกลบตามคำขอ/ครบกำหนด'; } });
+      db.users = db.users.filter(x => x !== u);
+      return { deleted: true };
     },
     me: (db, r) => pub(need(db, r.token)),
     updateProfile: (db, r) => {
@@ -233,6 +261,7 @@
     history: (db, r) => {
       const u = need(db, r.token);
       const t = today();
+      if (u.status === 'pending') return { user: pub(u), items: [], stats: { total: 0, attended: 0, upcoming: 0, thisYear: 0, byType: {} } };
       const items = db.regs.filter(x => x.employeeId === u.employeeId).map(x => {
         const a = db.acts.find(y => y.id === x.activityId) || {};
         const s = (a.slots || []).find(y => y.id === x.slotId) || {};
@@ -257,7 +286,8 @@
       return { me: pub(me), types: ['อบรม', 'กิจกรรมรณรงค์', 'กิจกรรมสิ่งแวดล้อม', 'ประชุม/สัมมนา', 'อื่นๆ'], activities,
         stats: { year: y, activities: activities.filter(a => a.date.slice(0, 4) === y).length, upcoming: activities.filter(a => !a.isPast).length,
           registrations: yearRegs.length, checkedIn: yearRegs.filter(x => x.checkedInAt).length,
-          people: new Set(yearRegs.map(x => x.employeeId)).size, accounts: db.users.filter(u => u.password).length } };
+          people: new Set(yearRegs.map(x => x.employeeId)).size, accounts: db.users.filter(u => u.password).length,
+          pendingUsers: pendingList(db).length } };
     },
     adminSaveActivity: (db, r) => {
       needAdmin(db, r.token);
