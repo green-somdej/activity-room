@@ -597,3 +597,7 @@ select.input { appearance: none; background-image: url("data:image/svg+xml,%3Csv
 /* ---------- บัญชีรออนุมัติ (v2.5) ---------- */
 #pending-bar .pending-bar { margin: 0 0 16px; }
 .mine-ribbon.is-pending { background: var(--warn-bg, #fff7ed); color: var(--warn-fg, #b45309); }
+.vis-callout { margin-top: 14px; align-items: center; }
+.vis-callout > div { flex: 1; }
+.vis-table .vis-bulk th { top: 52px; padding: 4px; }
+.vis-table .vis-bulk .btn { padding: 3px 8px; font-size: 12px; }

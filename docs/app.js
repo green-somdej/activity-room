@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '2.5.0'; // ให้ตรงกับ ?v= ใน index.html และ sw.js
+  const APP_VERSION = '2.5.2'; // ให้ตรงกับ ?v= ใน index.html และ sw.js
   const CONFIG = window.APP_CONFIG || {};
   const PRIVACY = Object.assign({ VERSION: '1', CONTROLLER: '-', CONTACT: '-', RETENTION_YEARS: 3 }, CONFIG.PRIVACY || {});
   const MIN_PW = 8; // ให้ตรงกับ MIN_PASSWORD_LENGTH ใน Api.gs
@@ -483,7 +483,8 @@
     const open = acts.filter((a) => !a.isPast).slice(0, 6);
     document.getElementById('home-acts').innerHTML = open.length
       ? `<div class="grid">${open.map(cardHtml).join('')}</div>`
-      : emptyHtml('calendar', 'ยังไม่มีกิจกรรมที่เปิดรับ', state.user ? 'กลับมาตรวจสอบใหม่เร็วๆ นี้' : 'กิจกรรมบางรายการแสดงเฉพาะผู้ที่เข้าสู่ระบบ — เข้าสู่ระบบเพื่อดูกิจกรรมทั้งหมดที่คุณเข้าร่วมได้');
+      : emptyHtml('calendar', state.user ? 'ยังไม่มีกิจกรรมที่เปิดรับ' : 'ยังไม่มีกิจกรรมที่เปิดให้บุคคลทั่วไปเห็น', state.user ? (state.user.isAdmin ? 'ตั้งค่าว่าใครเห็นกิจกรรมใดได้ที่ปุ่มด้านล่าง' : 'กลับมาตรวจสอบใหม่เร็วๆ นี้') : 'กิจกรรมส่วนใหญ่แสดงเฉพาะผู้ที่เข้าสู่ระบบ — เข้าสู่ระบบเพื่อดูกิจกรรมทั้งหมดที่คุณเข้าร่วมได้',
+          state.user ? (state.user.isAdmin ? `<a class="btn btn-primary" href="#/admin">ไปหน้าผู้ดูแล</a> <button class="btn btn-ghost" data-action="admVis">กำหนดการมองเห็นกิจกรรม</button>` : '') : '<a class="btn btn-primary" href="#/login">เข้าสู่ระบบ / สมัครใช้งาน</a>');
   }
 
   /* ========================== ACTIVITIES ========================== */
@@ -556,6 +557,7 @@
           ${statusPill(a, true)}
           ${a.requireCheckIn ? `<span class="pill pill-glass">${ic('qr', 'ic-sm')} เช็คอินด้วย QR หน้างาน</span>` : ''}
           ${audienceHtml(a, true)}
+          ${state.user && state.user.isAdmin ? `<button class="btn btn-glass btn-sm" data-action="admVisOne" data-id="${esc(a.id)}">${ic(a.isPublic ? 'eye' : 'lock', 'ic-sm')} ${a.isPublic ? 'สาธารณะ' : 'ไม่แสดงต่อสาธารณะ'} · ตั้งค่าการมองเห็น</button>` : ''}
         </div>
         <h1>${esc(a.name)}</h1>
         <div class="chips" style="gap:16px">
@@ -1263,7 +1265,12 @@
     const d = await loadAdmin(true);
     if (state.route !== 'admin') return;
     const st = d.stats; const by = Number(st.year) + 543;
+    // กิจกรรมที่กำลังจะมาถึงแต่คนนอก/คนที่ยังไม่เข้าสู่ระบบมองไม่เห็นเลย → เตือนให้ตั้งค่า
+    const hidden = d.activities.filter((a) => !a.isPast && !a.isPublic && (a.audience || ['staff']).length <= 1);
     view.innerHTML = `${adminHeadHtml()}
+      ${hidden.length ? `<div class="tip warn vis-callout">${ic('eye')}<div><b>${hidden.length} กิจกรรมที่กำลังจะมาถึง เห็นได้เฉพาะพนักงานที่เข้าสู่ระบบ</b><br>
+        คนที่ยังไม่เข้าสู่ระบบและบุคคลภายนอกจะเห็นว่า "ไม่มีกิจกรรมที่เปิด" — กดปุ่มเพื่อเลือกว่าจะให้กลุ่มใดเห็น หรือติ๊ก "สาธารณะ"</div>
+        <button class="btn btn-primary btn-sm" data-action="admVis">${ic('eye', 'ic-sm')} กำหนดการมองเห็น</button></div>` : ''}
       <div class="stats" style="margin-top:12px">
         ${statHtml('calendar', 'si-green', st.activities, `กิจกรรมปี ${by}`)}
         ${statHtml('users', 'si-blue', st.registrations, `ลงทะเบียนปี ${by}`)}
@@ -1487,7 +1494,7 @@
     let a = null;
     if (id) a = (state.adminActs || []).find((x) => x.id === id) || (adm.reg && adm.reg.activity.id === id ? adm.reg.activity : null);
     const types = (adm.data && adm.data.types) || ['อบรม', 'กิจกรรมรณรงค์', 'กิจกรรมสิ่งแวดล้อม', 'ประชุม/สัมมนา', 'อื่นๆ'];
-    const v = a || { name: '', type: types[0], location: '', description: '', activityDate: '', regStart: '', regEnd: '', requireCheckIn: true, slotsText: '', audience: ['staff'] };
+    const v = a || { name: '', type: types[0], location: '', description: '', activityDate: '', regStart: '', regEnd: '', requireCheckIn: true, slotsText: '', audience: ['staff'], isPublic: true };
     const aud = v.audience && v.audience.length ? v.audience : ['staff'];
     openModal(`
       <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
@@ -1614,7 +1621,9 @@
         <button class="${adm.visAll ? '' : 'on'}" data-action="visScope" data-v="upcoming">กำลังจะมาถึง</button>
         <button class="${adm.visAll ? 'on' : ''}" data-action="visScope" data-v="all">ทั้งหมด</button></div>`}
       <div class="vis-wrap"><table class="vis-table">
-        <thead><tr><th class="vis-name">กิจกรรม</th>${VIS_COLS.map((c) => `<th title="${esc(c.hint)}">${ic(c.icon, 'ic-sm')}<span>${esc(c.short)}</span></th>`).join('')}</tr></thead>
+        <thead><tr><th class="vis-name">กิจกรรม</th>${VIS_COLS.map((c) => `<th title="${esc(c.hint)}">${ic(c.icon, 'ic-sm')}<span>${esc(c.short)}</span></th>`).join('')}</tr>
+          ${list.length > 1 ? `<tr class="vis-bulk"><th class="vis-name"><small class="muted">ติ๊ก/เอาออกทั้งคอลัมน์ →</small></th>${VIS_COLS.map((c) => c.id === 'staff' ? '<th></th>'
+            : `<th><button type="button" class="btn btn-ghost btn-sm" data-action="visCol" data-v="${c.id}" title="ติ๊กหรือเอาออกทุกกิจกรรมในรายการ">ทั้งหมด</button></th>`).join('')}</tr>` : ''}</thead>
         <tbody>${list.length ? list.map((a) => `<tr data-vis-row="${esc(a.id)}">
           <td class="vis-name"><b>${esc(a.name)}</b><small class="muted">${dateRange(a)}${a.isPast ? ' · จัดไปแล้ว' : ''}</small></td>
           ${VIS_COLS.map((c) => cell(a, c)).join('')}</tr>`).join('')
@@ -1623,6 +1632,41 @@
       <div class="tip" style="margin-top:12px">${ic('info')}<div><b>สาธารณะ</b> = คนที่ยังไม่เข้าสู่ระบบเห็นรายละเอียด (เหมาะกับโปสเตอร์/QR) ·
         กลุ่มบุคคลภายนอกที่ไม่ได้ติ๊ก <b>จะไม่เห็นกิจกรรมนั้นเลย</b> และลงทะเบียน/ลงหน้างานไม่ได้</div></div>`, 'wide');
     document.querySelectorAll('[data-vis-act]').forEach((el) => el.addEventListener('change', () => saveVisibilityRow(el.dataset.visAct, el)));
+  }
+
+  /** ซ่อนคำเตือน "กิจกรรมที่คนนอกมองไม่เห็น" เมื่อตั้งค่าครบแล้ว */
+  function refreshVisCallout() {
+    const el = document.querySelector('.vis-callout');
+    if (!el || !adm.data) return;
+    const n = adm.data.activities.filter((a) => !a.isPast && !a.isPublic && (a.audience || ['staff']).length <= 1).length;
+    if (!n) el.remove(); else { const b = el.querySelector('b'); if (b) b.textContent = `${n} กิจกรรมที่กำลังจะมาถึง เห็นได้เฉพาะพนักงานที่เข้าสู่ระบบ`; }
+  }
+
+  /** ติ๊ก/เอาออกทั้งคอลัมน์ ของกิจกรรมที่แสดงอยู่ในตาราง (บันทึกครั้งเดียว) */
+  async function visToggleColumn(col) {
+    const list = adm.data.activities.filter((a) => adm.visAll || !a.isPast);
+    const has = (a) => (col === 'public_listing' ? !!a.isPublic : (a.audience || []).includes(col));
+    const turnOn = !list.every(has);
+    const colName = (VIS_COLS.find((c) => c.id === col) || {}).hint || col;
+    const ok = await confirmModal(turnOn ? 'เปิดทั้งคอลัมน์?' : 'ปิดทั้งคอลัมน์?',
+      `${turnOn ? 'ให้' : 'ไม่ให้'} <b>${esc(colName)}</b> ${col === 'public_listing' ? 'เห็นได้โดยไม่ต้องเข้าสู่ระบบ' : 'เห็นกิจกรรม'} — ${list.length} กิจกรรม`, turnOn ? 'เปิดทั้งหมด' : 'ปิดทั้งหมด', !turnOn);
+    if (!ok) { openVisibilityMatrix(); return; }
+    const items = list.map((a) => {
+      let aud = (a.audience || ['staff']).filter((t) => t !== 'staff');
+      let pub = !!a.isPublic;
+      if (col === 'public_listing') pub = turnOn;
+      else aud = turnOn ? Array.from(new Set(aud.concat(col))) : aud.filter((t) => t !== col);
+      return { activityId: a.id, audience: ['staff'].concat(aud), isPublic: pub };
+    });
+    try {
+      const res = await api('adminSetVisibilityBulk', { items });
+      res.forEach((a) => { const x = adm.data.activities.find((y) => y.id === a.id); if (x) Object.assign(x, { audience: a.audience, isPublic: a.isPublic }); });
+      state.acts = null;
+      if (state.redrawAdmin) state.redrawAdmin();
+      refreshVisCallout();
+      toast(`บันทึกการมองเห็น ${res.length} กิจกรรมแล้ว`, 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+    openVisibilityMatrix();
   }
 
   async function saveVisibilityRow(actId, changed) {
@@ -1639,6 +1683,7 @@
       putAdminAct(Object.assign({}, adm.data.activities[i] || {}, { audience: a.audience, isPublic: a.isPublic }));
       state.acts = null;
       if (state.redrawAdmin) state.redrawAdmin();
+      refreshVisCallout();
       toast('บันทึกการมองเห็นแล้ว', 'ok');
     } catch (e) {
       changed.checked = !changed.checked;
@@ -2287,6 +2332,7 @@
     admAdmins: () => openAdminsModal(),
     admVis: () => openVisibilityMatrix(),
     admVisOne: (el) => openVisibilityMatrix(el.dataset.id),
+    visCol: (el) => visToggleColumn(el.dataset.v),
     visScope: (el) => { adm.visAll = el.dataset.v === 'all'; openVisibilityMatrix(); },
     admRevoke: (el) => admRevoke(el),
     open: (el) => go('act/' + encodeURIComponent(el.dataset.id)),

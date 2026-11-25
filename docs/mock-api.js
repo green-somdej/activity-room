@@ -107,7 +107,8 @@
   };
   // พนักงานเห็นทุกกิจกรรมเสมอ — ผู้ดูแลเลือกเฉพาะกลุ่มบุคคลภายนอก
   const audienceOf = (a) => ['staff'].concat((a.audience || []).filter(t => t !== 'staff' && USER_TYPES[t]));
-  const canView = (a, u) => (u ? audienceOf(a).includes(u.userType || 'staff') : !!a.isPublic);
+  const pubOf = (a) => a.isPublic !== false;   // ค่าเริ่มต้น = แสดงต่อสาธารณะ
+  const canView = (a, u) => (u ? audienceOf(a).includes(u.userType || 'staff') : pubOf(a));
   function extProfile(db, type, r) {
     const s = (v) => String(v == null ? '' : v).trim();
     const phone = s(r.phone).replace(/[\s-]/g, '');
@@ -201,7 +202,7 @@
       id: a.id, name: a.name, date: a.slots[0].date, lastDate, type: a.type, description: a.description, location: a.location,
       regStart: a.regStart || '', regEnd: a.regEnd || '', regStatus: st, isPast: lastDate < t,
       canRegister: st === 'open' && lastDate >= t && forMe, requireCheckIn: a.requireCheckIn, registeredCount: regs.length,
-      audience, audienceLabels: audience.map(typeLabel), forMe, isPublic: !!a.isPublic,
+      audience, audienceLabels: audience.map(typeLabel), forMe, isPublic: pubOf(a),
       slots: a.slots.map(s => {
         const count = regs.filter(r => r.slotId === s.id).length;
         return { ...s, count, full: !!s.cap && count >= s.cap, past: s.date < t };
@@ -436,6 +437,7 @@
       a.isPublic = r.isPublic === true;
       return build(db, a, '');
     },
+    adminSetVisibilityBulk: (db, r) => (r.items || []).map(it => handlers.adminSetVisibility(db, Object.assign({ token: r.token }, it))),
     adminSetAdmin: (db, r) => {
       const me = needAdmin(db, r.token);
       const id = checkId(r.employeeId);
