@@ -574,3 +574,26 @@ select.input { appearance: none; background-image: url("data:image/svg+xml,%3Csv
 .vis-box { border: 1px solid var(--line); border-radius: 16px; padding: 12px 14px 10px; margin: 4px 0 14px; }
 .vis-box legend { padding: 0 6px; font-weight: 700; font-size: 14px; display: inline-flex; gap: 6px; align-items: center; }
 .aud-pick:has(input:disabled) { opacity: .85; cursor: default; }
+
+/* ---------- ตารางการมองเห็นกิจกรรม (v2.4) ---------- */
+.btn-vis { border-color: var(--brand-500); color: var(--brand-700); }
+.vis-wrap { overflow: auto; max-height: 58vh; margin-top: 12px; border: 1px solid var(--line); border-radius: 14px; }
+.vis-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.vis-table th, .vis-table td { padding: 9px 8px; border-bottom: 1px solid var(--line); text-align: center; }
+.vis-table thead th { position: sticky; top: 0; background: var(--card); z-index: 1; font-weight: 600; white-space: nowrap; }
+.vis-table thead th .ic { display: block; margin: 0 auto 2px; color: var(--brand-600); }
+.vis-table .vis-name { text-align: left; min-width: 200px; }
+.vis-table .vis-name b { display: block; font-weight: 600; }
+.vis-table .vis-name small { font-size: 12px; }
+.vis-table input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--brand-600); cursor: pointer; }
+.vis-table input:disabled { cursor: default; }
+.vis-table tr.saving { opacity: .55; }
+.vis-table tbody tr:hover { background: var(--bg-soft); }
+.newuser-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0; }
+.newuser-steps div { padding: 10px; border-radius: 12px; background: var(--bg-soft); border: 1px solid var(--line); font-size: 13px; text-align: center; }
+.newuser-steps b { display: block; font-size: 13.5px; }
+.newuser-steps .on { border-color: var(--warn-fg, #b45309); background: var(--warn-bg, #fff7ed); }
+@media (max-width: 520px) { .newuser-steps { grid-template-columns: 1fr; } }
+/* ---------- บัญชีรออนุมัติ (v2.5) ---------- */
+#pending-bar .pending-bar { margin: 0 0 16px; }
+.mine-ribbon.is-pending { background: var(--warn-bg, #fff7ed); color: var(--warn-fg, #b45309); }

@@ -75,6 +75,7 @@
   const pendingList = (db) => db.users.filter(u => u.password && u.status === 'pending').map(u => {
     const prev = isExt(u.userType) ? [] : db.regs.filter(x => x.employeeId === u.employeeId);
     return Object.assign(pub(u), { createdAt: u.createdAt || '',
+      pendingRegistrations: db.regs.filter(x => x.employeeId === u.employeeId && sinceOk(x, u) && x.regTs).map(x => { const a = db.acts.find(y => y.id === x.activityId); return (a ? a.name : x.activityId) + ' (' + x.date + ')'; }),
       previousRegistrations: prev.length, previousName: prev.length ? prev[prev.length - 1].name : '', previousDept: prev.length ? prev[prev.length - 1].deptName : '' });
   });
 
@@ -158,7 +159,8 @@
       regId: r.regId, employeeId: r.employeeId, name: r.name, deptName: r.deptName,
       participantType: r.participantType || 'staff', participantTypeLabel: typeLabel(r.participantType || 'staff'),
       slotId: r.slotId, slotLabel: r.slotLabel, date: r.date, registeredAt: r.registeredAt,
-      source: r.source || 'ลงทะเบียนผ่านแอป', checkedIn: !!r.checkedInAt, checkedInAt: r.checkedInAt
+      source: r.source || 'ลงทะเบียนผ่านแอป', checkedIn: !!r.checkedInAt, checkedInAt: r.checkedInAt,
+      pendingAccount: !!(db.users.find(u => u.employeeId === r.employeeId && u.status === 'pending' && sinceOk(r, u)))
     })).sort((x, y) => (x.date + x.slotId + x.deptName + x.name < y.date + y.slotId + y.deptName + y.name ? -1 : 1));
     return { activity: adminAct(db, a), registrants: list };
   }
@@ -172,7 +174,7 @@
     if (!token || !String(token).startsWith('demo.')) return null;
     const [, id, pw] = String(token).split('.');
     const u = db.users.find(x => x.employeeId === id);
-    return u && u.password && u.status !== 'pending' && btoa(unescape(encodeURIComponent(u.password))).slice(0, 6) === pw ? u : null;
+    return u && u.password && btoa(unescape(encodeURIComponent(u.password))).slice(0, 6) === pw ? u : null;
   };
   const mkToken = (u) => `demo.${u.employeeId}.${btoa(unescape(encodeURIComponent(u.password))).slice(0, 6)}`;
   const need = (db, token) => userByToken(db, token) || fail('กรุณาเข้าสู่ระบบใหม่อีกครั้ง', 'AUTH');
@@ -185,12 +187,14 @@
     return 'open';
   }
 
-  function build(db, a, empId, userType) {
+  // บัญชีรออนุมัติเห็น/แก้ไขเฉพาะรายการที่ลงหลังวันสมัคร
+  const sinceOk = (reg, u) => !u || u.status !== 'pending' || (reg.regTs || 0) >= (u.createdTs || 0);
+  function build(db, a, empId, userType, viewer) {
     const t = today();
     const audience = audienceOf(a);
     const forMe = !userType || audience.includes(userType);
     const regs = db.regs.filter(r => r.activityId === a.id);
-    const mine = empId ? regs.find(r => r.employeeId === empId) : null;
+    const mine = empId ? regs.find(r => r.employeeId === empId && sinceOk(r, viewer)) : null;
     const lastDate = a.slots.reduce((m, s) => (s.date > m ? s.date : m), '');
     const st = regStatus(a);
     return {
@@ -202,7 +206,7 @@
         const count = regs.filter(r => r.slotId === s.id).length;
         return { ...s, count, full: !!s.cap && count >= s.cap, past: s.date < t };
       }),
-      myReg: mine ? { slotId: mine.slotId, slotLabel: mine.slotLabel, registeredAt: mine.registeredAt, checkedIn: !!mine.checkedInAt, checkedInAt: mine.checkedInAt } : null
+      myReg: mine ? { slotId: mine.slotId, slotLabel: mine.slotLabel, registeredAt: mine.registeredAt, checkedIn: !!mine.checkedInAt, checkedInAt: mine.checkedInAt, pendingApproval: !!(viewer && viewer.status === 'pending') } : null
     };
   }
 
@@ -242,8 +246,8 @@
       const isNew = !u.createdAt;
       Object.assign(u, fields, { userType: type, name, email, password: r.password, noticeVersion: String(r.noticeVersion || ''),
         createdAt: u.createdAt || nowText(), status: isNew ? (!ext && db.admins.includes(u.employeeId) ? 'approved' : 'pending') : (u.status || 'approved') });
-      if (u.status === 'approved') return { token: mkToken(u), user: pub(u) };
-      return { pending: true, user: { name: u.name, userType: type, userTypeLabel: typeLabel(type), loginId: ext ? email : u.employeeId, email } };
+      if (isNew) u.createdTs = Date.now();
+      return { token: mkToken(u), user: pub(u), pending: u.status === 'pending' };
     },
     login: (db, r) => {
       const raw = String(r.login || r.employeeId || '').trim();
@@ -254,7 +258,6 @@
         u = db.users.find(x => x.password && normEmail(x.email) === normEmail(raw));
       } else u = db.users.find(x => x.employeeId === checkId(raw));
       if (!u || !u.password || u.password !== r.password) fail((byEmail ? 'อีเมล' : 'รหัสพนักงาน') + 'หรือรหัสผ่านไม่ถูกต้อง (ถ้ายังไม่มีบัญชี ให้เลือก "สมัครใช้งาน")', 'BAD_LOGIN');
-      if (u.status === 'pending') fail('บัญชีของคุณอยู่ระหว่างรอผู้ดูแลระบบอนุมัติ จะเข้าสู่ระบบได้เมื่อได้รับการอนุมัติแล้ว' + (u.email ? ' (ระบบจะแจ้งผลทางอีเมล)' : '') + ' หากรอนานกรุณาติดต่อผู้ดูแลระบบ', 'PENDING');
       return { token: mkToken(u), user: pub(u) };
     },
     adminPendingUsers: (db, r) => { needAdmin(db, r.token); return pendingList(db); },
@@ -264,7 +267,7 @@
       if (id === me.employeeId) fail('ไม่สามารถตรวจสอบบัญชีของตนเองได้');
       const u = db.users.find(x => x.employeeId === id) || fail('ไม่พบบัญชีนี้ (อาจถูกจัดการไปแล้ว)');
       if (r.approve === true) { u.status = 'approved'; u.reviewNote = String(r.reason || ''); }
-      else { if (u.status !== 'pending') fail('บัญชีนี้ได้รับการอนุมัติแล้ว ไม่สามารถปฏิเสธได้'); db.users = db.users.filter(x => x !== u); }
+      else { if (u.status !== 'pending') fail('บัญชีนี้ได้รับการอนุมัติแล้ว ไม่สามารถปฏิเสธได้'); db.regs = db.regs.filter(x => !(x.employeeId === u.employeeId && sinceOk(x, u) && !x.checkedInAt)); db.users = db.users.filter(x => x !== u); }
       return pendingList(db);
     },
     ackNotice: (db, r) => {
@@ -307,13 +310,13 @@
     },
     activities: (db, r) => {
       const u = userByToken(db, r.token);
-      return db.acts.map(a => build(db, a, u && u.employeeId, u && (u.userType || 'staff')))
+      return db.acts.map(a => build(db, a, u && u.employeeId, u && (u.userType || 'staff'), u))
         .filter(a => a.lastDate >= today() && (canView(db.acts.find(x => x.id === a.id), u) || a.myReg)).sort((a, b) => (a.date < b.date ? -1 : 1));
     },
     activity: (db, r) => {
       const a = db.acts.find(x => x.id === r.id) || fail('ไม่พบกิจกรรมนี้ในระบบ', 'NOT_FOUND');
       const u = userByToken(db, r.token);
-      const b = build(db, a, u && u.employeeId, u && (u.userType || 'staff'));
+      const b = build(db, a, u && u.employeeId, u && (u.userType || 'staff'), u);
       if (!canView(a, u) && !b.myReg) {
         if (!u) fail('กิจกรรมนี้สำหรับผู้ที่เข้าสู่ระบบเท่านั้น กรุณาเข้าสู่ระบบเพื่อดูรายละเอียด', 'LOGIN_REQUIRED');
         fail('ไม่พบกิจกรรมนี้ หรือบัญชีของคุณไม่มีสิทธิ์ดูกิจกรรมนี้', 'NOT_FOUND');
@@ -330,7 +333,10 @@
       if (!audienceOf(a).includes(ut)) fail('กิจกรรมนี้เปิดรับเฉพาะ ' + audienceOf(a).map(typeLabel).join(', '), 'NOT_ALLOWED');
       const s = a.slots.find(x => x.id === r.slotId) || fail('ไม่พบรอบวันที่/เวลาที่เลือก');
       if (s.date < today()) fail('รอบนี้ผ่านไปแล้ว กรุณาเลือกรอบอื่น');
-      const mine = db.regs.find(x => x.activityId === a.id && x.employeeId === u.employeeId);
+      const mineAll = db.regs.filter(x => x.activityId === a.id && x.employeeId === u.employeeId);
+      const mine = mineAll.find(x => sinceOk(x, u));
+      if (u.status === 'pending' && !mine && mineAll.length) fail('รหัสนี้มีการลงทะเบียนกิจกรรมนี้ไว้ก่อนแล้ว กรุณาติดต่อผู้ดูแลระบบ');
+      if (u.status === 'pending' && !mine && db.regs.filter(x => x.employeeId === u.employeeId && sinceOk(x, u) && x.date >= today()).length >= 5) fail('ระหว่างรอผู้ดูแลอนุมัติบัญชี ลงทะเบียนได้สูงสุด 5 กิจกรรม');
       if (mine && mine.slotId === s.id) fail('คุณลงทะเบียนรอบนี้ไว้แล้ว');
       if (s.cap && db.regs.filter(x => x.slotId === s.id && x.activityId === a.id).length >= s.cap) fail('รอบนี้เต็มแล้ว กรุณาเลือกรอบอื่น');
       if (mine) {
@@ -338,31 +344,30 @@
         Object.assign(mine, { slotId: s.id, slotLabel: label(s), date: s.date });
       } else {
         db.regs.push({ activityId: a.id, employeeId: u.employeeId, name: u.name, deptId: u.deptId, deptName: pub(u).deptName,
-          date: s.date, slotId: s.id, slotLabel: label(s), registeredAt: nowText(), checkedInAt: '', participantType: ut,
+          date: s.date, slotId: s.id, slotLabel: label(s), registeredAt: nowText(), regTs: Date.now(), checkedInAt: '', participantType: ut,
           regId: 'R' + Math.random().toString(16).slice(2, 10).toUpperCase() });
       }
-      return { moved: !!mine, activity: build(db, a, u.employeeId, ut) };
+      return { moved: !!mine, pending: u.status === 'pending', activity: build(db, a, u.employeeId, ut, u) };
     },
     cancel: (db, r) => {
       const u = need(db, r.token);
       const a = db.acts.find(x => x.id === r.activityId) || fail('ไม่พบกิจกรรมนี้ในระบบ');
-      const i = db.regs.findIndex(x => x.activityId === a.id && x.employeeId === u.employeeId);
+      const i = db.regs.findIndex(x => x.activityId === a.id && x.employeeId === u.employeeId && sinceOk(x, u));
       if (i < 0) fail('คุณยังไม่ได้ลงทะเบียนกิจกรรมนี้');
       if (db.regs[i].checkedInAt) fail('เช็คอินแล้ว ไม่สามารถยกเลิกได้');
       db.regs.splice(i, 1);
-      return { activity: build(db, a, u.employeeId, u.userType || 'staff') };
+      return { activity: build(db, a, u.employeeId, u.userType || 'staff', u) };
     },
     history: (db, r) => {
       const u = need(db, r.token);
       const t = today();
-      if (u.status === 'pending') return { user: pub(u), items: [], stats: { total: 0, attended: 0, upcoming: 0, thisYear: 0, byType: {} } };
-      const items = db.regs.filter(x => x.employeeId === u.employeeId).map(x => {
+      const items = db.regs.filter(x => x.employeeId === u.employeeId && sinceOk(x, u)).map(x => {
         const a = db.acts.find(y => y.id === x.activityId) || {};
         const s = (a.slots || []).find(y => y.id === x.slotId) || {};
         const status = x.checkedInAt ? 'attended' : (x.date >= t ? 'upcoming' : (a.requireCheckIn ? 'missed' : 'attended'));
         return { activityId: x.activityId, activityName: a.name, type: a.type, location: a.location, date: x.date,
           start: s.start || '', end: s.end || '', slotLabel: x.slotLabel, deptName: x.deptName, registeredAt: x.registeredAt,
-          checkedIn: !!x.checkedInAt, checkedInAt: x.checkedInAt, walkIn: false, status, evalUrl: x.date <= t ? '#demo-evaluate' : '' };
+          checkedIn: !!x.checkedInAt, checkedInAt: x.checkedInAt, walkIn: false, status, pendingApproval: u.status === 'pending', evalUrl: x.date <= t ? '#demo-evaluate' : '' };
       }).sort((a, b) => (a.date < b.date ? 1 : -1));
       const byType = {};
       items.filter(i => i.status === 'attended').forEach(i => { byType[i.type] = (byType[i.type] || 0) + 1; });
@@ -424,6 +429,13 @@
       return { checkinUrl: `https://script.google.com/macros/s/DEMO/exec?page=checkin&actoken=${a.checkinToken}` };
     },
     adminAdmins: (db, r) => adminList(db, needAdmin(db, r.token)),
+    adminSetVisibility: (db, r) => {
+      needAdmin(db, r.token);
+      const a = db.acts.find(x => x.id === r.activityId) || fail('ไม่พบกิจกรรมนี้ในระบบ', 'NOT_FOUND');
+      a.audience = ['staff'].concat(EXT.filter(t => (r.audience || []).includes(t)));
+      a.isPublic = r.isPublic === true;
+      return build(db, a, '');
+    },
     adminSetAdmin: (db, r) => {
       const me = needAdmin(db, r.token);
       const id = checkId(r.employeeId);

@@ -2,7 +2,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '2.3.0'; // ให้ตรงกับ ?v= ใน index.html และ sw.js
+  const APP_VERSION = '2.5.0'; // ให้ตรงกับ ?v= ใน index.html และ sw.js
   const CONFIG = window.APP_CONFIG || {};
   const PRIVACY = Object.assign({ VERSION: '1', CONTROLLER: '-', CONTACT: '-', RETENTION_YEARS: 3 }, CONFIG.PRIVACY || {});
   const MIN_PW = 8; // ให้ตรงกับ MIN_PASSWORD_LENGTH ใน Api.gs
@@ -126,6 +126,41 @@
     if (aud.length === 1 && aud[0] === 'staff') return glass ? `<span class="pill pill-glass">${ic('shield', 'ic-sm')} เฉพาะพนักงาน</span>` : '';
     return `<span class="pill ${glass ? 'pill-glass' : 'pill-info'}">${ic('users', 'ic-sm')} ${aud.map((t) => esc(utInfo(t).short)).join(' · ')}</span>`;
   };
+  /** ขั้นตอนสำหรับผู้ใช้ใหม่: ครั้งแรกต้องได้รับอนุมัติจากผู้ดูแลก่อน จึงลงทะเบียนเข้าร่วมกิจกรรมได้ (active = ขั้นที่กำลังอยู่) */
+  const newUserStepsHtml = (active) => `
+    <div class="tip warn" style="margin:12px 0 0">${ic('info')}<div><b>ผู้ใช้ใหม่ — ลงทะเบียนครั้งแรกได้ทันที แต่ต้องได้รับอนุมัติจากผู้ดูแลระบบ</b><br>
+      สมัครแล้วเข้าสู่ระบบและลงทะเบียนกิจกรรมได้เลย การลงทะเบียนจะมีสถานะ <b>"รออนุมัติ"</b> จนกว่าผู้ดูแลตรวจสอบและอนุมัติบัญชี
+      (แจ้งผลทางอีเมล) · อนุมัติครั้งเดียว ครั้งต่อไปลงทะเบียนได้ทันที</div></div>
+    <div class="newuser-steps">
+      <div class="${active === 1 ? 'on' : ''}"><b>1. สมัครใช้งาน</b>กรอกข้อมูลตามประเภท</div>
+      <div class="${active === 2 ? 'on' : ''}"><b>2. ลงทะเบียนกิจกรรม</b>ได้ทันที · สถานะรออนุมัติ</div>
+      <div class="${active === 3 ? 'on' : ''}"><b>3. ผู้ดูแลอนุมัติ</b>ยืนยันการลงทะเบียน · แจ้งทางอีเมล</div>
+    </div>`;
+  const isPendingUser = () => !!(state.user && state.user.status === 'pending');
+  /** แถบแจ้งเตือนทุกหน้า สำหรับบัญชีที่ยังรออนุมัติ */
+  function renderPendingBar() {
+    let bar = document.getElementById('pending-bar');
+    if (!bar) { bar = document.createElement('div'); bar.id = 'pending-bar'; view.parentNode.insertBefore(bar, view); }
+    bar.innerHTML = isPendingUser() && state.route !== 'login' ? `<div class="tip warn pending-bar">${ic('clock')}<div>
+      <b>บัญชีของคุณรอผู้ดูแลระบบอนุมัติ (ลงทะเบียนครั้งแรก)</b> — ลงทะเบียนกิจกรรมได้ตามปกติ แต่การลงทะเบียนจะยืนยันเมื่อได้รับอนุมัติแล้ว
+      ${state.user.email ? `ระบบจะแจ้งผลไปที่ <b>${esc(state.user.email)}</b>` : 'หากรอนานกรุณาติดต่อผู้ดูแลระบบ'}</div></div>` : '';
+  }
+  /** อัปเดตสถานะบัญชีจากเซิร์ฟเวอร์ (เช่น เพิ่งได้รับอนุมัติ) — ไม่เกินนาทีละครั้ง */
+  let lastMeCheck = 0;
+  async function refreshMe() {
+    if (!state.token || Date.now() - lastMeCheck < 60000) return;
+    lastMeCheck = Date.now();
+    const wasPending = isPendingUser();
+    try {
+      const u = await api('me');
+      state.user = u; LS.set('gs_user', u);
+      if (wasPending && u.status !== 'pending') {
+        state.acts = null; state.history = null;
+        toast('บัญชีของคุณได้รับการอนุมัติแล้ว — การลงทะเบียนได้รับการยืนยัน', 'ok');
+        route();
+      } else { renderChrome(); }
+    } catch (e) { /* ข้าม */ }
+  }
   /** วิธีเช็คอินหน้างานของผู้ใช้คนนี้ */
   const checkinHowHtml = () => {
     const u = state.user;
@@ -239,6 +274,7 @@
   ];
 
   function renderChrome() {
+    renderPendingBar();
     const active = state.route === 'act' ? 'activities' : state.route;
     const NAV = state.user && state.user.isAdmin
       ? NAV_BASE.slice(0, 3).concat([{ id: 'admin', label: 'ผู้ดูแล', icon: 'shield' }], NAV_BASE.slice(3)) : NAV_BASE;
@@ -289,7 +325,7 @@
     const mine = a.myReg ? slotOf(a, a.myReg.slotId) : null;
     return `
       <article class="act-card" data-action="open" data-id="${esc(a.id)}" tabindex="0" role="link" aria-label="${esc(a.name)}">
-        ${a.myReg ? `<span class="mine-ribbon">${ic('check', 'ic-sm')} ลงทะเบียนแล้ว</span>` : ''}
+        ${a.myReg ? `<span class="mine-ribbon ${a.myReg.pendingApproval ? 'is-pending' : ''}">${ic(a.myReg.pendingApproval ? 'clock' : 'check', 'ic-sm')} ${a.myReg.pendingApproval ? 'ลงทะเบียนแล้ว · รออนุมัติ' : 'ลงทะเบียนแล้ว'}</span>` : ''}
         <div class="act-cover ${t.cls}">
           ${ic(t.icon, 'cover-ic')}
           <div class="cover-top"><span class="pill pill-glass">${esc(a.type || 'กิจกรรม')}</span>${a.myReg ? '' : statusPill(a, true)}</div>
@@ -336,7 +372,7 @@
     if (!a) return;
     if (!state.token) {
       state.returnTo = '#/act/' + encodeURIComponent(a.id);
-      toast('กรุณาเข้าสู่ระบบก่อน แล้วระบบจะพากลับมาที่กิจกรรมนี้'); go('login'); return;
+      toast('กรุณาเข้าสู่ระบบก่อน แล้วระบบจะพากลับมาที่กิจกรรมนี้ (ผู้ใช้ใหม่: สมัครและรอผู้ดูแลอนุมัติครั้งแรกก่อน)'); go('login'); return;
     }
     const html = el.innerHTML;
     el.closest('.qbtns').querySelectorAll('.qbtn').forEach((b) => { b.disabled = true; });
@@ -403,7 +439,8 @@
           <a class="btn btn-white btn-lg" href="#/login">${ic('user')} เข้าสู่ระบบ / สมัครใช้งาน</a>
           <a class="btn btn-glass btn-lg" href="#/activities">${ic('calendar')} ดูกิจกรรม</a>
         </div>
-      </section>`;
+      </section>
+      <section class="section">${newUserStepsHtml(0)}</section>`;
 
     view.innerHTML = `${hero}
       <section class="section" id="my-upcoming"></section>
@@ -563,7 +600,7 @@
       const canCancel = !mine.checkedIn && !(mySlot && mySlot.past);
       notice = `<div class="tip ok my-reg">
           <div style="display:flex;gap:10px;align-items:flex-start">${ic('calCheck')}<div>
-            <b>คุณลงทะเบียนแล้ว</b><br>${mySlot ? `${fmtDLong(mySlot.date)} · ${timeLabel(mySlot)}` : esc(mine.slotLabel)}
+            <b>คุณลงทะเบียนแล้ว</b>${mine.pendingApproval ? ' <span class="pill pill-warn">รอผู้ดูแลอนุมัติ</span>' : ''}<br>${mySlot ? `${fmtDLong(mySlot.date)} · ${timeLabel(mySlot)}` : esc(mine.slotLabel)}
             ${mine.checkedIn ? `<br>${ic('check', 'ic-sm')} เช็คอินแล้ว ${esc(mine.checkedInAt)}` : ''}
           </div></div>
           <span style="display:flex;gap:8px;flex-wrap:wrap">
@@ -583,7 +620,7 @@
       notice = `<div class="tip warn">${ic('alert')}<div>ปิดรับลงทะเบียนแล้ว</div></div>`;
     } else if (!state.token) {
       notice = `<div class="tip my-reg"><div style="display:flex;gap:10px">${ic('lock')}<div>เข้าสู่ระบบก่อน แล้วแตะรอบที่ต้องการเพื่อลงทะเบียนได้ทันที</div></div>
-        <button class="btn btn-primary btn-sm" data-action="gotoLogin">เข้าสู่ระบบ</button></div>`;
+        <button class="btn btn-primary btn-sm" data-action="gotoLogin">เข้าสู่ระบบ</button></div>${newUserStepsHtml(0)}`;
     }
 
     const byDate = {};
@@ -657,7 +694,7 @@
     if (!a) return;
     const slotId = btn.dataset.slot;
     const s = slotOf(a, slotId);
-    if (!state.token) { state.returnTo = location.hash; toast('กรุณาเข้าสู่ระบบก่อนลงทะเบียน'); go('login'); return; }
+    if (!state.token) { state.returnTo = location.hash; toast('กรุณาเข้าสู่ระบบก่อนลงทะเบียน (ผู้ใช้ใหม่: สมัครและรอผู้ดูแลอนุมัติครั้งแรกก่อน)'); go('login'); return; }
     if (a.myReg && String(a.myReg.slotId) === String(slotId)) return;
     if (a.myReg) {
       const old = slotOf(a, a.myReg.slotId);
@@ -697,9 +734,12 @@
     openModal(`
       <div style="text-align:center">
         <div class="success-ic">${ic('check')}</div>
-        <h3>${moved ? 'เปลี่ยนรอบเรียบร้อย' : 'ลงทะเบียนสำเร็จ!'}</h3>
+        <h3>${moved ? 'เปลี่ยนรอบเรียบร้อย' : (a.myReg && a.myReg.pendingApproval ? 'ลงทะเบียนแล้ว — รออนุมัติ' : 'ลงทะเบียนสำเร็จ!')}</h3>
         <p style="margin:6px 0 0"><b>${esc(a.name)}</b></p>
         <p class="muted" style="margin:6px 0 0">${s ? `${fmtDLong(s.date)}<br>${timeLabel(s)}` : ''}${a.location ? `<br>${esc(a.location)}` : ''}</p>
+        ${a.myReg && a.myReg.pendingApproval ? `<div class="tip warn" style="text-align:left">${ic('clock')}<div><b>ลงทะเบียนครั้งแรก — รอผู้ดูแลระบบอนุมัติ</b><br>
+          บันทึกการลงทะเบียนของคุณแล้ว และจะยืนยันเมื่อผู้ดูแลอนุมัติบัญชี${state.user && state.user.email ? ` ระบบจะแจ้งผลไปที่ <b>${esc(state.user.email)}</b>` : ''}
+          · หากไม่อนุมัติ การลงทะเบียนนี้จะถูกยกเลิก</div></div>` : ''}
         ${a.requireCheckIn ? `<div class="tip checkin-note" style="text-align:left">${ic('scan')}<div><b>การเข้าร่วมกิจกรรมจะสำเร็จ เมื่อท่านเช็คอินหน้างาน</b><br>
           วันงานให้สแกน QR เช็คอินที่จุดลงทะเบียน แล้ว${checkinHowHtml()}</div></div>` : ''}
         <div style="display:grid;gap:8px;margin-top:20px">
@@ -1148,7 +1188,8 @@
 
   function tlItemHtml(i) {
     const t = typeInfo(i.type); const d = parseD(i.date);
-    const pill = i.status === 'upcoming' ? `<span class="pill pill-info">${relDay(i.date) || 'ลงทะเบียนแล้ว'}</span>`
+    const pill = i.pendingApproval && !i.checkedIn ? '<span class="pill pill-warn">รอผู้ดูแลอนุมัติ</span>'
+      : i.status === 'upcoming' ? `<span class="pill pill-info">${relDay(i.date) || 'ลงทะเบียนแล้ว'}</span>`
       : i.status === 'missed' ? '<span class="pill pill-bad">ไม่ได้เช็คอิน</span>'
       : `<span class="pill pill-ok">${ic('check', 'ic-sm')} ${i.checkedIn ? 'เช็คอินแล้ว' : 'เข้าร่วมแล้ว'}</span>`;
     const time = i.start ? `${i.start}–${i.end} น.` : (i.slotLabel && /\d{2}:\d{2}/.test(i.slotLabel) ? i.slotLabel.replace(/^\S+\s/, '') : '');
@@ -1210,6 +1251,7 @@
         <p class="page-sub">เพิ่ม/แก้ไขกิจกรรม ดูรายชื่อผู้ลงทะเบียน เช็คอินแทน และดาวน์โหลด QR / โปสเตอร์</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-ghost" data-action="admPending">${ic('user')} ตรวจสอบบัญชีใหม่${adm.data && adm.data.stats.pendingUsers ? ` <span class="pill pill-warn" style="margin-left:4px">${adm.data.stats.pendingUsers}</span>` : ''}</button>
+        <button class="btn btn-ghost btn-vis" data-action="admVis">${ic('eye')} กำหนดการมองเห็นกิจกรรม</button>
         <button class="btn btn-ghost" data-action="admAdmins">${ic('shield')} ผู้ดูแลระบบ</button>
         <button class="btn btn-primary" data-action="admNew">${ic('plus')} เพิ่มกิจกรรม</button>
       </div>
@@ -1273,6 +1315,7 @@
       <div class="adm-actions">
         <button class="btn btn-primary btn-sm" data-action="admOpen" data-id="${id}">${ic('users', 'ic-sm')} รายชื่อ</button>
         <button class="btn btn-ghost btn-sm" data-action="admEdit" data-id="${id}">${ic('edit', 'ic-sm')} แก้ไข</button>
+        <button class="btn btn-ghost btn-sm" data-action="admVisOne" data-id="${id}">${ic('eye', 'ic-sm')} การมองเห็น</button>
         <button class="btn btn-ghost btn-sm" data-action="qr" data-id="${id}">${ic('qr', 'ic-sm')} QR</button>
         <button class="btn btn-ghost btn-sm" data-action="poster" data-id="${id}">${ic('image', 'ic-sm')} โปสเตอร์</button>
       </div>
@@ -1313,6 +1356,7 @@
         </div>
         <div class="adm-hero-actions">
           <button class="btn btn-white btn-sm" data-action="admEdit" data-id="${id}">${ic('edit', 'ic-sm')} แก้ไขกิจกรรม</button>
+          <button class="btn btn-glass btn-sm" data-action="admVisOne" data-id="${id}">${ic('eye', 'ic-sm')} การมองเห็น</button>
           <button class="btn btn-glass btn-sm" data-action="admCiQr" data-id="${id}">${ic('scan', 'ic-sm')} QR เช็คอินหน้างาน</button>
           <button class="btn btn-glass btn-sm" data-action="qr" data-id="${id}">${ic('qr', 'ic-sm')} QR ลงทะเบียน</button>
           <button class="btn btn-glass btn-sm" data-action="poster" data-id="${id}">${ic('image', 'ic-sm')} โปสเตอร์</button>
@@ -1378,7 +1422,7 @@
         <span class="reg-no">${i + 1}</span>
         <span class="avatar">${esc(initials(x.name))}</span>
         <div class="reg-main">
-          <b>${esc(x.name)}</b>${x.participantType && x.participantType !== 'staff' ? ` <span class="pill pill-info" style="font-size:11.5px;padding:1px 8px">${esc(utInfo(x.participantType).short)}</span>` : ''}
+          <b>${esc(x.name)}</b>${x.pendingAccount ? ` <button class="pill pill-warn" style="font-size:11.5px;padding:1px 8px;border:0;cursor:pointer" data-action="admPending" title="บัญชีลงทะเบียนครั้งแรก ยังไม่ได้อนุมัติ — แตะเพื่อตรวจสอบ">${ic('clock', 'ic-sm')} รออนุมัติบัญชี</button>` : ''}${x.participantType && x.participantType !== 'staff' ? ` <span class="pill pill-info" style="font-size:11.5px;padding:1px 8px">${esc(utInfo(x.participantType).short)}</span>` : ''}
           <small>${x.participantType && x.participantType !== 'staff' ? '' : esc(x.employeeId) + ' · '}${esc(x.deptName || '-')}</small>
           <small class="muted">${ic('clock', 'ic-sm')} ${esc(slotShort(a, x.slotId, x.slotLabel))}${/walk-in|หน้างาน/i.test(x.source) ? ' · <b>หน้างาน</b>' : ''}</small>
         </div>
@@ -1544,6 +1588,67 @@
     drawQRInto(document.getElementById('ci-canvas'), r.checkinUrl);
   }
 
+  /* ---------- ตารางการมองเห็น: กลุ่มใดเห็นกิจกรรมใด ---------- */
+  const VIS_COLS = [{ id: 'public_listing', short: 'สาธารณะ', icon: 'eye', hint: 'ผู้ที่ยังไม่เข้าสู่ระบบเห็นได้' }]
+    .concat(USER_TYPES.map((t) => ({ id: t.id, short: t.short, icon: t.icon, hint: t.label })));
+
+  async function openVisibilityMatrix(onlyId) {
+    if (!adm.data) {
+      openModal(`<div style="text-align:center;padding:30px 0"><span class="spinner" style="color:var(--brand-500)"></span></div>`);
+      try { await loadAdmin(true); } catch (e) { closeModal(); toast(e.message, 'err'); return; }
+    }
+    const all = adm.data.activities;
+    const list = onlyId ? all.filter((a) => a.id === onlyId) : all.filter((a) => adm.visAll || !a.isPast);
+    const cell = (a, c) => {
+      if (c.id === 'staff') return `<td class="vis-c"><input type="checkbox" checked disabled title="พนักงานเห็นทุกกิจกรรมเสมอ"></td>`;
+      const on = c.id === 'public_listing' ? !!a.isPublic : (a.audience || []).includes(c.id);
+      return `<td class="vis-c"><input type="checkbox" data-vis-act="${esc(a.id)}" data-vis-col="${c.id}" ${on ? 'checked' : ''} aria-label="${esc(c.hint)} — ${esc(a.name)}"></td>`;
+    };
+    openModal(`
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+        <div><h3>กำหนดการมองเห็นกิจกรรม</h3>
+          <p class="muted" style="margin:2px 0 0;font-size:13.5px">ติ๊กว่าแต่ละกลุ่มเห็น (และลงทะเบียน) กิจกรรมใดได้ — บันทึกทันทีที่ติ๊ก · พนักงานเห็นทุกกิจกรรมเสมอ</p></div>
+        <button class="icon-btn" data-action="closeModal" aria-label="ปิด">${ic('x')}</button>
+      </div>
+      ${onlyId ? '' : `<div class="seg" style="margin-top:12px">
+        <button class="${adm.visAll ? '' : 'on'}" data-action="visScope" data-v="upcoming">กำลังจะมาถึง</button>
+        <button class="${adm.visAll ? 'on' : ''}" data-action="visScope" data-v="all">ทั้งหมด</button></div>`}
+      <div class="vis-wrap"><table class="vis-table">
+        <thead><tr><th class="vis-name">กิจกรรม</th>${VIS_COLS.map((c) => `<th title="${esc(c.hint)}">${ic(c.icon, 'ic-sm')}<span>${esc(c.short)}</span></th>`).join('')}</tr></thead>
+        <tbody>${list.length ? list.map((a) => `<tr data-vis-row="${esc(a.id)}">
+          <td class="vis-name"><b>${esc(a.name)}</b><small class="muted">${dateRange(a)}${a.isPast ? ' · จัดไปแล้ว' : ''}</small></td>
+          ${VIS_COLS.map((c) => cell(a, c)).join('')}</tr>`).join('')
+          : `<tr><td colspan="${VIS_COLS.length + 1}" class="muted" style="text-align:center;padding:24px">ไม่มีกิจกรรม</td></tr>`}</tbody>
+      </table></div>
+      <div class="tip" style="margin-top:12px">${ic('info')}<div><b>สาธารณะ</b> = คนที่ยังไม่เข้าสู่ระบบเห็นรายละเอียด (เหมาะกับโปสเตอร์/QR) ·
+        กลุ่มบุคคลภายนอกที่ไม่ได้ติ๊ก <b>จะไม่เห็นกิจกรรมนั้นเลย</b> และลงทะเบียน/ลงหน้างานไม่ได้</div></div>`, 'wide');
+    document.querySelectorAll('[data-vis-act]').forEach((el) => el.addEventListener('change', () => saveVisibilityRow(el.dataset.visAct, el)));
+  }
+
+  async function saveVisibilityRow(actId, changed) {
+    const row = document.querySelector(`tr[data-vis-row="${CSS.escape(actId)}"]`);
+    const boxes = Array.from(row.querySelectorAll('[data-vis-act]'));
+    const audience = ['staff'].concat(boxes.filter((b) => b.checked && b.dataset.visCol !== 'public_listing').map((b) => b.dataset.visCol));
+    const isPublic = boxes.some((b) => b.checked && b.dataset.visCol === 'public_listing');
+    boxes.forEach((b) => { b.disabled = true; });
+    row.classList.add('saving');
+    try {
+      const a = await api('adminSetVisibility', { activityId: actId, audience, isPublic });
+      const i = adm.data.activities.findIndex((x) => x.id === actId);
+      if (i >= 0) Object.assign(adm.data.activities[i], { audience: a.audience, isPublic: a.isPublic });
+      putAdminAct(Object.assign({}, adm.data.activities[i] || {}, { audience: a.audience, isPublic: a.isPublic }));
+      state.acts = null;
+      if (state.redrawAdmin) state.redrawAdmin();
+      toast('บันทึกการมองเห็นแล้ว', 'ok');
+    } catch (e) {
+      changed.checked = !changed.checked;
+      toast(e.message, 'err');
+    } finally {
+      boxes.forEach((b) => { b.disabled = false; });
+      row.classList.remove('saving');
+    }
+  }
+
   /* ---------- จัดการผู้ดูแลระบบ ---------- */
   async function openAdminsModal(list) {
     if (!list) {
@@ -1616,6 +1721,7 @@
           <span class="avatar">${esc(initials(x.name || '?'))}</span>
           <div style="flex:1;min-width:220px"><b>${esc(x.name)}</b> <span class="pill ${x.userType && x.userType !== 'staff' ? 'pill-info' : 'pill-soft'}">${esc(utInfo(x.userType).label)}</span>
             ${detail(x)}
+            ${(x.pendingRegistrations || []).length ? `<small style="display:block;color:var(--warn-fg)">${ic('calendar', 'ic-sm')} ลงทะเบียนระหว่างรอ ${x.pendingRegistrations.length} กิจกรรม: ${x.pendingRegistrations.map(esc).join(', ')}</small>` : ''}
             <small class="muted" style="display:block">สมัครเมื่อ ${esc(x.createdAt || '-')}</small></div>
           <div style="display:flex;gap:6px">
             <button class="btn btn-primary btn-sm" data-action="admReview" data-ok="1" data-emp="${esc(x.employeeId)}">${ic('check', 'ic-sm')} อนุมัติ</button>
@@ -1845,7 +1951,7 @@
           <h2>ส่งคำขอสมัครเรียบร้อย</h2>
           <p class="muted" style="margin:6px 0 0">คุณ${esc(firstName(d.name))} · ${esc(d.userTypeLabel || '')}</p>
         </div>
-        <div class="tip warn" style="margin-top:18px">${ic('clock')}<div><b>รอผู้ดูแลระบบอนุมัติก่อนเข้าสู่ระบบ</b><br>
+        ${newUserStepsHtml(2)}
           ผู้ดูแลจะตรวจสอบข้อมูลของคุณ เมื่ออนุมัติแล้วจึงจะเข้าสู่ระบบและลงทะเบียนกิจกรรมได้
           ${d.email ? `<br>ระบบจะแจ้งผลไปที่อีเมล <b>${esc(d.email)}</b>` : '<br>หากรอนานกรุณาติดต่อผู้ดูแลระบบ'}</div></div>
         <dl class="kv" style="margin-top:14px">
@@ -1877,7 +1983,7 @@
           <div class="field"><label>รหัสผ่าน</label>${pwInput('password', 'current-password')}</div>
           <button class="btn btn-primary btn-lg btn-block" style="margin-top:6px">${ic('user')} เข้าสู่ระบบ</button>
           <p class="muted" style="font-size:13px;text-align:center;margin-top:14px">ยังไม่มีบัญชี? <a href="#/login/signup" data-action="authMode" data-v="signup"><b>สมัครใช้งาน</b></a> · ลืมรหัสผ่าน ติดต่อผู้ดูแลระบบเพื่อรีเซ็ต</p>
-          <div class="tip" style="margin-top:10px">${ic('info')}<div>บัญชีที่สมัครใหม่ <b>ต้องได้รับการอนุมัติจากผู้ดูแลระบบก่อน</b> จึงจะเข้าสู่ระบบได้</div></div>
+          <div class="tip" style="margin-top:10px">${ic('info')}<div>ผู้ใช้ใหม่ลงทะเบียนกิจกรรมครั้งแรกได้ทันที แต่ <b>ต้องได้รับการอนุมัติจากผู้ดูแลระบบ</b> การลงทะเบียนจึงจะยืนยัน (แจ้งผลทางอีเมล)</div></div>
           ${staff ? `<div class="tip" style="margin-top:10px">${ic('shield')}<div><b>ผู้ดูแลระบบ</b> เข้าสู่ระบบที่นี่ด้วยรหัสพนักงานของตนเอง แล้วจะเห็นเมนู <b>ผู้ดูแล</b> สำหรับจัดการกิจกรรม</div></div>` : ''}
           <p class="muted" style="font-size:13px;text-align:center;margin-top:14px"><a href="#" data-action="privacy">ประกาศความเป็นส่วนตัว</a></p>
         </form>`;
@@ -1885,6 +1991,7 @@
       right = `
         <h2>สมัครใช้งาน</h2>
         <p class="muted" style="margin:4px 0 0">เลือกประเภทที่ตรงกับคุณ — ผู้ดูแลระบบจะตรวจสอบและอนุมัติก่อนใช้งาน</p>
+        ${newUserStepsHtml(1)}
         <div class="tabs2">
           <button data-action="authMode" data-v="login">เข้าสู่ระบบ</button>
           <button class="on" data-action="authMode" data-v="signup">สมัครใช้งาน</button>
@@ -1915,7 +2022,7 @@
             <div class="field"><label>ยืนยันรหัสผ่าน *</label>${pwInput('confirm', 'new-password')}</div>
           </div>
           <span class="hint" style="display:block;margin:-6px 0 14px;font-size:12.5px;color:var(--muted)">อย่างน้อย ${MIN_PW} ตัวอักษร</span>
-          <div class="tip" style="margin:0 0 14px">${ic('info')}<div>หลังสมัคร <b>ผู้ดูแลระบบจะตรวจสอบข้อมูลก่อนอนุมัติ</b> คุณจะเข้าสู่ระบบและลงทะเบียนกิจกรรมได้เมื่อได้รับการอนุมัติแล้ว${ext ? ' (แจ้งผลทางอีเมล)' : ''}</div></div>
+          <div class="tip" style="margin:0 0 14px">${ic('info')}<div>สมัครแล้ว <b>ลงทะเบียนกิจกรรมได้ทันที</b> แต่การลงทะเบียนครั้งแรกจะมีสถานะ <b>"รออนุมัติ"</b> จนกว่าผู้ดูแลระบบจะตรวจสอบและอนุมัติบัญชี${ext ? ' (แจ้งผลทางอีเมล)' : ''} · หากไม่อนุมัติ การลงทะเบียนจะถูกยกเลิก</div></div>
           <label style="display:flex;gap:10px;align-items:flex-start;margin:0 0 16px;font-size:14px;cursor:pointer">
             <input type="checkbox" name="ack" style="margin-top:4px;width:18px;height:18px;flex:none">
             <span>ข้าพเจ้าได้อ่านและรับทราบ <a href="#" data-action="privacy"><b>ประกาศความเป็นส่วนตัว</b></a> เกี่ยวกับการเก็บและใช้ข้อมูลส่วนบุคคลของระบบนี้แล้ว</span></label>
@@ -1990,13 +2097,24 @@
         if (!f.ack.checked) throw new Error('กรุณาติ๊กรับทราบประกาศความเป็นส่วนตัวก่อน');
         const r = await api('signup', Object.assign({ userType: suType, employeeId: ext ? '' : f.employeeId.value, name: f.name.value,
           deptId: ext ? '' : f.deptId.value, email, password: f.password.value, ack: true, noticeVersion: PRIVACY.VERSION }, extra));
-        if (r.token) { afterLogin(r, true); return; }
+        if (r.token) { afterLogin(r, true); if (r.pending) setTimeout(openPendingWelcome, 700); return; }
         state.signupDone = r.user;
         state.loginMode = ext ? 'external' : 'staff';
         LS.set('gs_last_mode', state.loginMode); LS.set('gs_last_emp', r.user.loginId);
         go('login/sent');
       });
     }
+  }
+
+  /** หลังสมัคร: แจ้งว่าลงทะเบียนกิจกรรมได้เลย แต่ครั้งแรกต้องรอผู้ดูแลอนุมัติ */
+  function openPendingWelcome() {
+    const u = state.user || {};
+    openModal(`<div style="text-align:center"><div class="success-ic">${ic('check')}</div><h3>สมัครใช้งานเรียบร้อย</h3>
+        <p class="muted" style="margin:6px 0 0">คุณ${esc(firstName(u.name))} · ${esc(u.userTypeLabel || '')}</p></div>
+      ${newUserStepsHtml(2)}
+      <dl class="kv" style="margin-top:6px"><dt>ชื่อเข้าสู่ระบบ</dt><dd><b>${esc(u.loginId || '')}</b></dd>
+        ${u.email ? `<dt>แจ้งผลการอนุมัติทาง</dt><dd>${esc(u.email)}</dd>` : ''}</dl>
+      <div class="modal-actions"><a class="btn btn-primary" href="#/activities" data-action="closeModal">${ic('calendar')} เลือกกิจกรรมที่จะลงทะเบียน</a></div>`);
   }
 
   function afterLogin(r, isNew) {
@@ -2167,6 +2285,9 @@
       try { await navigator.clipboard.writeText(adm.ci.url); toast('คัดลอกลิงก์แล้ว', 'ok'); } catch (e) { window.prompt('คัดลอกลิงก์นี้', adm.ci.url); }
     },
     admAdmins: () => openAdminsModal(),
+    admVis: () => openVisibilityMatrix(),
+    admVisOne: (el) => openVisibilityMatrix(el.dataset.id),
+    visScope: (el) => { adm.visAll = el.dataset.v === 'all'; openVisibilityMatrix(); },
     admRevoke: (el) => admRevoke(el),
     open: (el) => go('act/' + encodeURIComponent(el.dataset.id)),
     qr: (el) => { const a = findAct(el.dataset.id); if (a) openQrModal(a); },
@@ -2276,6 +2397,8 @@
   }
 
   window.addEventListener('hashchange', route);
+  window.addEventListener('hashchange', () => { refreshMe(); });
+  setTimeout(refreshMe, 1500);
   route();
 
   if (state.token) {
