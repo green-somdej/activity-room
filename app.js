@@ -564,7 +564,9 @@
         <div class="chips">
           <span class="pill pill-glass">${ic(t.icon, 'ic-sm')} ${esc(a.type || 'กิจกรรม')}</span>
           ${statusPill(a, true)}
-          ${a.requireCheckIn ? `<span class="pill pill-glass">${ic('qr', 'ic-sm')} เช็คอินด้วย QR หน้างาน</span>` : ''}
+          ${a.requireCheckIn ? (state.user && state.user.isAdmin
+            ? `<button class="btn btn-glass btn-sm" data-action="admCiQr" data-id="${esc(a.id)}" title="เปิด/ดาวน์โหลด QR เช็คอินหน้างาน">${ic('scan', 'ic-sm')} QR เช็คอินหน้างาน</button>`
+            : `<span class="pill pill-glass">${ic('qr', 'ic-sm')} เช็คอินด้วย QR หน้างาน</span>`) : ''}
           ${audienceHtml(a, true)}
           ${state.user && state.user.isAdmin ? `<button class="btn btn-glass btn-sm" data-action="admVisOne" data-id="${esc(a.id)}">${ic(a.isPublic ? 'eye' : 'lock', 'ic-sm')} ${a.isPublic ? 'สาธารณะ' : 'ไม่แสดงต่อสาธารณะ'} · ตั้งค่าการมองเห็น</button>` : ''}
         </div>
@@ -697,6 +699,7 @@
         <button class="btn btn-ghost" data-action="poster">${ic('image')} โปสเตอร์</button>
         <button class="btn btn-ghost" data-action="copyLink">${ic('copy')} คัดลอกลิงก์</button>
         ${navigator.share ? `<button class="btn btn-ghost full" data-action="share">${ic('share')} แชร์</button>` : ''}
+        ${a.requireCheckIn && state.user && state.user.isAdmin ? `<button class="btn btn-ghost full" data-action="admCiQr" data-id="${esc(a.id)}">${ic('scan')} QR เช็คอินหน้างาน (แอดมิน)</button>` : ''}
       </div>`;
   }
 
