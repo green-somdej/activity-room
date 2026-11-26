@@ -1586,10 +1586,23 @@
   }
 
   /* ---------- QR เช็คอินหน้างาน ---------- */
+  /** ลิงก์เช็คอินจากเซิร์ฟเวอร์ใช้ "ลิงก์ Web App" ที่ตั้งไว้ในเมนูชีต ซึ่งอาจเป็น deployment เก่า (เปิดแล้วเจอ "ไม่พบเพจ")
+   *  จึงสร้างใหม่จาก API_URL ใน config.js — ตัวเดียวกับที่แอปเรียกใช้ได้อยู่แล้วแน่นอน */
+  function fixCheckinUrl(url) {
+    if (DEMO || !url) return url;
+    try {
+      const token = new URL(url).searchParams.get('actoken');
+      if (!token) return url;
+      const base = String(CONFIG.API_URL).replace(/[?#].*$/, '');
+      return `${base}?page=checkin&actoken=${encodeURIComponent(token)}`;
+    } catch (e) { return url; }
+  }
+
   async function openCheckinQr(a) {
     openModal(`<div style="text-align:center;padding:30px 0"><span class="spinner" style="color:var(--brand-500)"></span><p class="muted">กำลังสร้าง QR เช็คอิน...</p></div>`);
     let r;
     try { r = await api('adminCheckinQr', { activityId: a.id }); } catch (e) { closeModal(); toast(e.message, 'err'); return; }
+    r.checkinUrl = fixCheckinUrl(r.checkinUrl);
     adm.ci = { url: r.checkinUrl, name: a.name };
     openModal(`
       <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
