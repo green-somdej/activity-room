@@ -429,6 +429,51 @@
       a.requireCheckIn = true;
       return { checkinUrl: `https://script.google.com/macros/s/DEMO/exec?page=checkin&actoken=${a.checkinToken}` };
     },
+    /* ---------- เช็คอินหน้างาน (หน้า #/checkin ไม่ต้อง Login) ---------- */
+    checkinInfo: (db, r) => {
+      const a = db.acts.find(x => x.checkinToken && x.checkinToken === r.actToken);
+      if (!a) return { activity: null, departments: handlers.departments(db) };
+      const dates = (a.slots || []).map(s => s.date).concat(a.activityDate || []);
+      const t = today();
+      const st = dates.includes(t) ? 'today' : (dates.every(d => d > t) ? 'before' : 'after');
+      const aud = a.audience || ['staff'];
+      return { departments: handlers.departments(db), activity: { id: a.id, name: a.name, date: a.activityDate, type: a.type,
+        checkinDateStatus: st, canCheckInToday: st === 'today', audience: aud,
+        externalTypes: aud.filter(isExt).map(id => ({ id, label: typeLabel(id) })), staffAllowed: aud.includes('staff') } };
+    },
+    checkinStaff: (db, r) => {
+      const a = handlers.checkinInfo(db, r).activity || fail('ไม่พบกิจกรรมนี้ หรือ QR Code ไม่ถูกต้อง');
+      const x = db.regs.find(y => y.activityId === a.id && y.employeeId === String(r.employeeId));
+      if (!x) return { success: false, notRegistered: true, employeeId: r.employeeId, message: 'ไม่พบข้อมูลการลงทะเบียน' };
+      const base = { employeeName: String(x.name || '').split(' ')[0], activityName: a.name, activityDate: a.date };
+      if (x.checkedInAt) return Object.assign(base, { success: false, alreadyCheckedIn: true, message: 'ท่านเช็คอินไปแล้ว ไม่สามารถเช็คอินซ้ำได้', checkedInAt: x.checkedInAt });
+      x.checkedInAt = nowText();
+      return Object.assign(base, { success: true, message: 'เช็คอินสำเร็จ! ยินดีต้อนรับเข้าร่วมกิจกรรม', checkedInAt: x.checkedInAt });
+    },
+    checkinEmail: (db, r) => {
+      const a = handlers.checkinInfo(db, r).activity || fail('ไม่พบกิจกรรมนี้ หรือ QR Code ไม่ถูกต้อง');
+      const e = normEmail(r.email);
+      const x = db.regs.find(y => y.activityId === a.id && normEmail(y.email) === e);
+      if (!x) return { success: false, notRegistered: true, email: e, message: 'ไม่พบข้อมูลการลงทะเบียนของอีเมลนี้' };
+      if (x.checkedInAt) return { success: false, alreadyCheckedIn: true, message: 'ท่านเช็คอินไปแล้ว', employeeName: x.name, checkedInAt: x.checkedInAt };
+      x.checkedInAt = nowText();
+      return { success: true, message: 'เช็คอินสำเร็จ!', employeeName: x.name, checkedInAt: x.checkedInAt };
+    },
+    checkinWalkIn: (db, r) => {
+      const a = handlers.checkinInfo(db, r).activity || fail('ไม่พบกิจกรรมนี้ หรือ QR Code ไม่ถูกต้อง');
+      const d = db.depts.find(x => x.id === r.departmentId) || fail('ไม่พบหน่วยงานนี้ในระบบ');
+      db.regs.push({ activityId: a.id, employeeId: String(r.employeeId), name: r.name, deptId: d.id, deptName: d.name, date: today(),
+        registeredAt: nowText(), regTs: Date.now(), checkedInAt: nowText(), participantType: 'staff', regId: 'R' + Math.random().toString(16).slice(2, 10).toUpperCase() });
+      return { success: true, message: 'ลงทะเบียนหน้างานและเช็คอินสำเร็จ!', employeeName: r.name, deptName: d.name, activityName: a.name, checkedInAt: nowText() };
+    },
+    checkinWalkInExt: (db, r) => {
+      const a = handlers.checkinInfo(db, r).activity || fail('ไม่พบกิจกรรมนี้ หรือ QR Code ไม่ถูกต้อง');
+      if (!a.audience.includes(r.userType)) fail('กิจกรรมนี้ไม่ได้เปิดรับ ' + typeLabel(r.userType));
+      db.regs.push({ activityId: a.id, employeeId: 'W' + Math.random().toString(36).slice(2, 9).toUpperCase(), name: r.name, email: normEmail(r.email),
+        deptName: typeLabel(r.userType) + (r.org ? ' · ' + r.org : ''), date: today(), registeredAt: nowText(), regTs: Date.now(),
+        checkedInAt: nowText(), participantType: r.userType, regId: 'R' + Math.random().toString(16).slice(2, 10).toUpperCase() });
+      return { success: true, message: 'ลงทะเบียนหน้างานและเช็คอินสำเร็จ!', employeeName: r.name, deptName: typeLabel(r.userType), activityName: a.name, checkedInAt: nowText() };
+    },
     adminAdmins: (db, r) => adminList(db, needAdmin(db, r.token)),
     adminSetVisibility: (db, r) => {
       needAdmin(db, r.token);

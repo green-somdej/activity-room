@@ -1586,15 +1586,14 @@
   }
 
   /* ---------- QR เช็คอินหน้างาน ---------- */
-  /** ลิงก์เช็คอินจากเซิร์ฟเวอร์ใช้ "ลิงก์ Web App" ที่ตั้งไว้ในเมนูชีต ซึ่งอาจเป็น deployment เก่า (เปิดแล้วเจอ "ไม่พบเพจ")
-   *  จึงสร้างใหม่จาก API_URL ใน config.js — ตัวเดียวกับที่แอปเรียกใช้ได้อยู่แล้วแน่นอน */
+  /** ลิงก์เช็คอิน → หน้า #/checkin ในแอปนี้ (?ci=TOKEN) แทนหน้า Apps Script (?page=checkin)
+   *  เพราะหน้า Apps Script เปิดไม่ได้/ค้างโหลดบนมือถือที่ล็อกอิน Google หลายบัญชี */
   function fixCheckinUrl(url) {
-    if (DEMO || !url) return url;
+    if (!url) return url;
     try {
       const token = new URL(url).searchParams.get('actoken');
       if (!token) return url;
-      const base = String(CONFIG.API_URL).replace(/[?#].*$/, '');
-      return `${base}?page=checkin&actoken=${encodeURIComponent(token)}`;
+      return `${location.origin}${location.pathname}?ci=${encodeURIComponent(token)}`;
     } catch (e) { return url; }
   }
 
@@ -2219,6 +2218,137 @@
       <h1 class="page-title">${ic('shield')} ประกาศความเป็นส่วนตัว</h1>${noticeHtml().replace('max-height:56vh;overflow:auto;', '')}</section>`;
   }
 
+  /**
+   * #/checkin/<token> — หน้าเช็คอินหน้างาน (จาก QR เช็คอิน: ?ci=<token>)
+   * ไม่ต้องเข้าสู่ระบบ · เรียก API ผ่าน fetch แทนหน้า Apps Script (?page=checkin) ซึ่งเปิดไม่ได้บนมือถือ
+   * ที่ล็อกอิน Google หลายบัญชี · ใช้เครื่องเดียวเช็คอินหลายคนต่อกันได้ (ปุ่ม "เช็คอินคนถัดไป")
+   */
+  async function renderCheckin(token) {
+    const ORG_LABEL = { volunteer: 'ชื่อกลุ่ม / มูลนิธิ / องค์กร (ถ้ามี)', intern: 'สถาบันการศึกษา *', contractor: 'ชื่อบริษัท / ห้างร้าน *' };
+    const wrap = (inner) => `<section class="card card-pad" style="max-width:520px;margin:0 auto">
+      <h1 class="page-title" style="display:flex;gap:8px;align-items:center">${ic('scan')} เช็คอินเข้าร่วมกิจกรรม</h1>${inner}</section>`;
+    if (!token) { view.innerHTML = wrap(emptyHtml('alert', 'ไม่พบข้อมูล QR', 'กรุณาสแกน QR เช็คอินของกิจกรรมอีกครั้ง')); return; }
+    view.innerHTML = wrap(`<div style="text-align:center;padding:30px 0"><span class="spinner" style="color:var(--brand-500)"></span><p class="muted">กำลังโหลดข้อมูลกิจกรรม...</p></div>`);
+
+    const info = await api('checkinInfo', { actToken: token });
+    const a = info.activity;
+    if (!a) { view.innerHTML = wrap(emptyHtml('alert', 'ไม่พบกิจกรรมนี้', 'QR Code ไม่ถูกต้อง หรือกิจกรรมถูกลบไปแล้ว')); return; }
+    const head = `<div style="text-align:center;margin:4px 0 16px"><b style="font-size:17px">${esc(a.name)}</b>
+      <div class="muted" style="font-size:13.5px">${ic('calendar', 'ic-sm')} จัดวันที่ ${esc(a.date)}${a.type ? ' · ' + esc(a.type) : ''}</div></div>`;
+    if (!a.canCheckInToday) {
+      const msg = a.checkinDateStatus === 'before'
+        ? `ยังไม่ถึงวันจัดกิจกรรม — เช็คอินได้เฉพาะวันที่ ${esc(a.date)} เท่านั้น`
+        : `กิจกรรมนี้จัดไปแล้วเมื่อวันที่ ${esc(a.date)} ไม่สามารถเช็คอินย้อนหลังได้`;
+      view.innerHTML = wrap(head + `<div class="tip warn">${ic('alert')}<div>${msg}</div></div>`);
+      return;
+    }
+    const ext = a.externalTypes || [];
+    const staffOk = a.staffAllowed !== false;
+    let mode = staffOk ? 'staff' : 'external';
+    const ack = `<label class="check-line" style="margin-top:8px"><input type="checkbox" name="ack">
+      <span>ข้าพเจ้ารับทราบ<a href="#/privacy" target="_blank">ประกาศความเป็นส่วนตัว</a> และยินยอมให้บันทึกข้อมูลข้างต้น เพื่อบันทึกการเข้าร่วมกิจกรรมและจัดทำสถิติของโรงพยาบาล</span></label>`;
+
+    const showEntry = () => {
+      view.innerHTML = wrap(head + `
+        ${staffOk && ext.length ? `<div class="seg seg-block" style="margin-bottom:14px">
+          <button type="button" class="${mode === 'staff' ? 'on' : ''}" data-ci-mode="staff">${ic('shield', 'ic-sm')} พนักงาน รพ.</button>
+          <button type="button" class="${mode === 'external' ? 'on' : ''}" data-ci-mode="external">${ic('users', 'ic-sm')} บุคคลภายนอก</button></div>` : ''}
+        <form id="ci-form" novalidate>
+          <div class="form-error" id="ci-err"></div>
+          ${mode === 'staff'
+            ? `<div class="field"><label for="ci-id">กรอกรหัสพนักงาน (7 หลัก) ที่ใช้ตอนลงทะเบียน</label>${idInput('ci-id', '')}</div>`
+            : `<div class="field"><label for="ci-email">กรอกอีเมลที่ใช้ลงทะเบียน</label><input class="input" id="ci-email" name="email" type="email" inputmode="email" autocomplete="email" placeholder="name@example.com" required></div>`}
+          <button class="btn btn-primary btn-lg btn-block">${ic('check')} ยืนยันเข้าร่วม</button>
+        </form>`);
+      view.querySelectorAll('[data-ci-mode]').forEach((b) => b.addEventListener('click', () => { mode = b.dataset.ciMode; showEntry(); }));
+      const inp = document.getElementById(mode === 'staff' ? 'ci-id' : 'ci-email');
+      if (inp) inp.focus();
+      bindForm('ci-form', 'ci-err', async (f) => {
+        if (mode === 'staff') {
+          const id = String(f.employeeId.value || '').replace(/\D/g, '');
+          if (id.length !== 7) throw new Error('กรุณากรอกรหัสพนักงานให้ครบ 7 หลัก');
+          const r = await api('checkinStaff', { actToken: token, employeeId: id });
+          if (r.notRegistered) showWalkIn(id); else showResult(r);
+        } else {
+          const email = String(f.email.value || '').trim();
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('กรุณากรอกอีเมลให้ถูกต้อง');
+          const r = await api('checkinEmail', { actToken: token, email });
+          if (r.notRegistered) showWalkInExt(r.email || email); else showResult(r);
+        }
+      });
+    };
+
+    const showWalkIn = (empId) => {
+      view.innerHTML = wrap(head + `
+        <div class="tip warn" style="margin-bottom:12px">${ic('info')}<div><b>ไม่พบการลงทะเบียนล่วงหน้า</b><br>กรอกข้อมูลด้านล่างเพื่อลงทะเบียนหน้างานและเช็คอินได้ทันที</div></div>
+        <form id="ci-form" novalidate>
+          <div class="form-error" id="ci-err"></div>
+          <div class="field"><label>รหัสพนักงาน</label><input class="input code" value="${esc(empId)}" readonly></div>
+          <div class="field"><label>ชื่อ-นามสกุล</label><input class="input" name="name" maxlength="120" placeholder="เช่น สมชาย ใจดี" required></div>
+          <div class="field"><label>หน่วยงาน</label><select class="input" name="deptId">${deptOptions(info.departments || [], '')}</select></div>
+          ${ack}
+          <button class="btn btn-primary btn-lg btn-block" style="margin-top:12px">${ic('check')} ลงทะเบียนหน้างาน + เช็คอิน</button>
+          <button type="button" class="btn btn-ghost btn-block" id="ci-back" style="margin-top:8px">ยกเลิก / กรอกรหัสใหม่</button>
+        </form>`);
+      document.getElementById('ci-back').addEventListener('click', showEntry);
+      bindForm('ci-form', 'ci-err', async (f) => {
+        if (!f.name.value.trim()) throw new Error('กรุณากรอกชื่อ-นามสกุล');
+        if (!f.deptId.value) throw new Error('กรุณาเลือกหน่วยงาน');
+        if (!f.ack.checked) throw new Error('กรุณาติ๊กรับทราบประกาศความเป็นส่วนตัวก่อน');
+        showResult(await api('checkinWalkIn', { actToken: token, employeeId: empId, name: f.name.value.trim(), departmentId: f.deptId.value, ack: true }));
+      });
+    };
+
+    const showWalkInExt = (email) => {
+      view.innerHTML = wrap(head + `
+        <div class="tip warn" style="margin-bottom:12px">${ic('info')}<div><b>ไม่พบการลงทะเบียนล่วงหน้า</b><br>กรอกข้อมูลด้านล่างเพื่อลงทะเบียนหน้างานและเช็คอินได้ทันที</div></div>
+        <form id="ci-form" novalidate>
+          <div class="form-error" id="ci-err"></div>
+          <div class="field"><label>อีเมล</label><input class="input" value="${esc(email)}" readonly></div>
+          <div class="field"><label>ประเภทผู้เข้าร่วม</label><select class="input" name="userType">
+            ${ext.length === 1 ? '' : '<option value="">— เลือกประเภท —</option>'}${ext.map((t) => `<option value="${esc(t.id)}">${esc(t.label)}</option>`).join('')}</select></div>
+          <div class="field"><label>ชื่อ-นามสกุล</label><input class="input" name="name" maxlength="120" placeholder="เช่น สมหญิง รักษ์โลก" required></div>
+          <div class="field" id="ci-org-wrap"><label id="ci-org-label">สังกัด / องค์กร</label><input class="input" name="org" maxlength="150"></div>
+          ${ack}
+          <button class="btn btn-primary btn-lg btn-block" style="margin-top:12px">${ic('check')} ลงทะเบียนหน้างาน + เช็คอิน</button>
+          <button type="button" class="btn btn-ghost btn-block" id="ci-back" style="margin-top:8px">ยกเลิก / กรอกใหม่</button>
+        </form>`);
+      const f = document.getElementById('ci-form');
+      const syncOrg = () => {
+        const t = f.userType.value;
+        document.getElementById('ci-org-wrap').style.display = t && t !== 'public' ? '' : 'none';
+        document.getElementById('ci-org-label').textContent = ORG_LABEL[t] || 'สังกัด / องค์กร';
+      };
+      f.userType.addEventListener('change', syncOrg); syncOrg();
+      document.getElementById('ci-back').addEventListener('click', showEntry);
+      bindForm('ci-form', 'ci-err', async (f) => {
+        const t = f.userType.value, name = f.name.value.trim(), org = f.org.value.trim();
+        if (!t) throw new Error('กรุณาเลือกประเภทผู้เข้าร่วม');
+        if (!name) throw new Error('กรุณากรอกชื่อ-นามสกุล');
+        if ((t === 'intern' || t === 'contractor') && !org) throw new Error('กรุณากรอก' + ORG_LABEL[t].replace(' *', ''));
+        if (!f.ack.checked) throw new Error('กรุณาติ๊กรับทราบประกาศความเป็นส่วนตัวก่อน');
+        showResult(await api('checkinWalkInExt', { actToken: token, email, userType: t, name, org, ack: true }));
+      });
+    };
+
+    const showResult = (r) => {
+      const ok = r.success, again = r.alreadyCheckedIn;
+      const bg = ok ? '' : again ? 'background:linear-gradient(135deg,#f59e0b,#fbbf24);box-shadow:0 0 0 10px #fef3c7' : 'background:linear-gradient(135deg,#dc2626,#ef4444);box-shadow:0 0 0 10px #fee2e2';
+      view.innerHTML = wrap(head + `<div style="text-align:center">
+        <div class="success-ic" style="${bg}">${ic(ok ? 'check' : again ? 'clock' : 'x')}</div>
+        <h2 style="margin:0">${ok ? 'เช็คอินสำเร็จ!' : again ? 'เช็คอินไปแล้ว' : 'ไม่สามารถเช็คอินได้'}</h2>
+        <p style="margin:8px 0 0">${esc(r.message || '')}</p></div>
+        ${r.employeeName ? `<dl class="kv" style="margin-top:14px">
+          <dt>ชื่อ-นามสกุล</dt><dd>${esc(r.employeeName)}</dd>
+          ${r.deptName ? `<dt>หน่วยงาน/สังกัด</dt><dd>${esc(r.deptName)}</dd>` : ''}
+          ${r.checkedInAt ? `<dt>เวลาเช็คอิน</dt><dd>${esc(r.checkedInAt)}</dd>` : ''}</dl>` : ''}
+        <button type="button" class="btn btn-primary btn-lg btn-block" id="ci-next" style="margin-top:18px">${ic('users')} เช็คอินคนถัดไป</button>`);
+      document.getElementById('ci-next').addEventListener('click', showEntry);
+    };
+
+    showEntry();
+  }
+
   function openPrivacy(askAck) {
     openModal(`<h3>ประกาศความเป็นส่วนตัว</h3>${noticeHtml()}
       <div class="modal-actions">${askAck
@@ -2229,6 +2359,7 @@
   /** ผู้ใช้เดิมที่ยังไม่เคยรับทราบประกาศฉบับปัจจุบัน → ขอให้รับทราบหลังเข้าสู่ระบบ */
   function maybeAskNotice() {
     if (!state.token || !state.user) return;
+    if (state.route === 'checkin') return;   // หน้าเช็คอินหน้างาน: ไม่เด้งกล่องรบกวน
     if (state.user.noticeVersion === PRIVACY.VERSION) return;
     if (document.querySelector('#modal-root .modal')) return;
     openPrivacy(true);
@@ -2452,7 +2583,7 @@
   });
 
   /* ============================= BOOT ============================= */
-  const ROUTES = { home: renderHome, activities: renderActivities, act: renderDetail, history: renderHistory, profile: renderProfile, login: renderLogin, admin: renderAdmin, privacy: renderPrivacy };
+  const ROUTES = { home: renderHome, activities: renderActivities, act: renderDetail, history: renderHistory, profile: renderProfile, login: renderLogin, admin: renderAdmin, privacy: renderPrivacy, checkin: renderCheckin };
 
   applyTheme();
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => renderChrome());
@@ -2465,6 +2596,9 @@
   const qs = new URLSearchParams(location.search);
   if (qs.get('act')) {
     history.replaceState(null, '', location.pathname + '#/act/' + encodeURIComponent(qs.get('act')));
+  } else if (qs.get('ci')) {
+    // ลิงก์จาก QR เช็คอินหน้างาน: ?ci=TOKEN → หน้าเช็คอิน (ไม่ต้องเข้าสู่ระบบ)
+    history.replaceState(null, '', location.pathname + '#/checkin/' + encodeURIComponent(qs.get('ci')));
   }
 
   window.addEventListener('hashchange', route);
